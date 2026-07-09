@@ -126,18 +126,40 @@ jobs:
         working-directory: app
         run: npx expo prebuild --platform android --clean
 
-      # ── 10. Patch DocuSign to use Maven (drop local AAR) ───────────────────
-      # react-native-docusign's build.gradle uses a local stripped .aar which
-      # breaks bundleReleaseAar. Replace with pure Maven dependency.
-      - name: Patch DocuSign to Maven-only
+      # ── 10. Strip DocuSign local AAR (use Maven only) ──────────────────────
+      # The Expo plugin creates a local stripped .aar in libs/ during prebuild,
+      # and the module's build.gradle has implementation files(...) referencing
+      # it. Gradle 9's bundleReleaseAar forbids local AAR deps in AAR projects.
+      # We nuke the libs/ dir and patch the build.gradle to use Maven exclusively.
+      - name: Strip DocuSign local AAR
         working-directory: app
         run: |
+          DS_LIBS="node_modules/react-native-docusign/android/libs"
           DS_GRADLE="node_modules/react-native-docusign/android/build.gradle"
-          if [ -f "$DS_GRADLE" ]; then
-            # Remove the local AAR file dependency line
-            sed -i '/implementation files.*sdk-pdf.*\.aar/d' "$DS_GRADLE"
-            # Remove the sdk-pdf exclusion from the main SDK dependency
-            sed -i "/exclude group: 'com.docusign', module: 'sdk-pdf'/d" "$DS_GRADLE"
+
+          echo "=== Before: libs/ ==="
+          ls -la "$DS_LIBS" 2>/dev/null || echo "(empty)"
+
+          # 1. Delete the local stripped AAR file
+          rm -rf "$DS_LIBS"
+          echo "=== After delete: libs/ ==="
+          ls -la "$DS_LIBS" 2>/dev/null || echo "(deleted)"
+
+          # 2. Remove implementation files(...) line from build.gradle
+          echo "=== Before gradle patch ==="
+          grep -n "implementation files\|exclude group.*sdk-pdf" "$DS_GRADLE" || echo "(no matches)"
+
+          sed -i '/implementation files.*sdk-pdf.*\.aar/d' "$DS_GRADLE"
+          sed -i "/exclude group: 'com.docusign', module: 'sdk-pdf'/d" "$DS_GRADLE"
+
+          echo "=== After gradle patch ==="
+          grep -n "implementation files\|exclude group.*sdk-pdf" "$DS_GRADLE" || echo "(no matches - OK)"
+
+          # 3. Remove flatDir referencing libs/ from root build.gradle (added by Expo plugin)
+          ROOT_BUILD_GRADLE="android/build.gradle"
+          if grep -q "flatDir.*libs" "$ROOT_BUILD_GRADLE" 2>/dev/null; then
+            echo "=== Removing flatDir from root build.gradle ==="
+            sed -i '/flatDir.*libs/d' "$ROOT_BUILD_GRADLE"
           fi
 
       # ── 11. Patch JVM target alignment ─────────────────────────────────────
