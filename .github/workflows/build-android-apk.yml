@@ -198,12 +198,19 @@ jobs:
           echo "project.dependencies.add('implementation', files('$DS_AAR_PATH'))" >> android/app/build.gradle
           echo "=== Stripped AAR dependency added to app/build.gradle ==="
 
-      # ── 13. Build release APK (arm64 only for speed) ──────────────────────
+      # ── 13. Bump JVM metaspace (avoid OOM from class metadata) ────────────
+      - name: Bump JVM metaspace
+        working-directory: app
+        run: |
+          sed -i 's/org\.gradle\.jvmargs=-Xmx[0-9]*m -XX:MaxMetaspaceSize=[0-9]*m/org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m/' android/gradle.properties
+          grep "org.gradle.jvmargs" android/gradle.properties
+
+      # ── 14. Build release APK (arm64 only for speed) ──────────────────────
       - name: Build APK
         working-directory: app/android
         run: ./gradlew assembleRelease --parallel --build-cache -PreactNativeArchitectures=arm64-v8a -x lint
 
-      # ── 14. Upload APK artifact ────────────────────────────────────────────
+      # ── 15. Upload APK artifact ────────────────────────────────────────────
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
