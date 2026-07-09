@@ -127,12 +127,42 @@ jobs:
         working-directory: app
         run: npx expo prebuild --platform android --clean
 
-      # ── 10. Build release APK ──────────────────────────────────────────────
+      # ── 10. Patch JVM target alignment ─────────────────────────────────────
+      # react-native-docusign compiles Kotlin with JVM 21 but Java defaults to 17.
+      # This injects a subprojects block into the root build.gradle to force both
+      # to JVM 21, preventing "Inconsistent JVM Target Compatibility" errors.
+      - name: Patch JVM target alignment
+        working-directory: app
+        run: |
+          cat >> android/build.gradle << 'GRADLEOF'
+
+          subprojects {
+            afterEvaluate { project ->
+              if (project.hasProperty('android')) {
+                project.android {
+                  compileOptions {
+                    sourceCompatibility JavaVersion.VERSION_21
+                    targetCompatibility JavaVersion.VERSION_21
+                  }
+                }
+              }
+              if (project.plugins.hasPlugin('org.jetbrains.kotlin.android')) {
+                project.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+                  kotlinOptions {
+                    jvmTarget = '21'
+                  }
+                }
+              }
+            }
+          }
+          GRADLEOF
+
+      # ── 11. Build release APK ──────────────────────────────────────────────
       - name: Build APK
         working-directory: app/android
         run: ./gradlew assembleRelease
 
-      # ── 11. Upload APK artifact ────────────────────────────────────────────
+      # ── 12. Upload APK artifact ────────────────────────────────────────────
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
