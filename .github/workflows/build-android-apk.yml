@@ -126,36 +126,30 @@ jobs:
         working-directory: app
         run: npx expo prebuild --platform android --clean
 
-      # ── 10. Strip DocuSign local AAR (use Maven only) ──────────────────────
-      # The Expo plugin creates a local stripped .aar in libs/ during prebuild,
-      # and the module's build.gradle has implementation files(...) referencing
-      # it. Gradle 9's bundleReleaseAar forbids local AAR deps in AAR projects.
-      # We nuke the libs/ dir and patch the build.gradle to use Maven exclusively.
-      - name: Strip DocuSign local AAR
+      # ── 10. Fix DocuSign AAR dependency (compileOnly in module, implementation in app) ──
+      # Gradle 9's bundleReleaseAar forbids local .aar deps in library projects.
+      # We change implementation files(...) to compileOnly files(...) in the module
+      # (compileOnly is not packaged so bundleReleaseAar passes), then add the
+      # stripped AAR as implementation files(...) in the app build (APK builds are fine).
+      - name: Fix DocuSign AAR dependency
         working-directory: app
         run: |
           DS_LIBS="node_modules/react-native-docusign/android/libs"
           DS_GRADLE="node_modules/react-native-docusign/android/build.gradle"
 
-          echo "=== Before: libs/ ==="
+          echo "=== libs/ contents ==="
           ls -la "$DS_LIBS" 2>/dev/null || echo "(empty)"
 
-          # 1. Delete the local stripped AAR file
-          rm -rf "$DS_LIBS"
-          echo "=== After delete: libs/ ==="
-          ls -la "$DS_LIBS" 2>/dev/null || echo "(deleted)"
+          # 1. Change implementation files(...) to compileOnly files(...) in module
+          echo "=== Before: implementation files line ==="
+          grep -n "files.*sdk-pdf" "$DS_GRADLE" || echo "(not found)"
 
-          # 2. Remove implementation files(...) line from build.gradle
-          echo "=== Before gradle patch ==="
-          grep -n "implementation files\|exclude group.*sdk-pdf" "$DS_GRADLE" || echo "(no matches)"
+          sed -i 's/implementation files/compileOnly files/' "$DS_GRADLE"
 
-          sed -i '/implementation files.*sdk-pdf.*\.aar/d' "$DS_GRADLE"
-          sed -i "/exclude group: 'com.docusign', module: 'sdk-pdf'/d" "$DS_GRADLE"
+          echo "=== After: should be compileOnly ==="
+          grep -n "files.*sdk-pdf" "$DS_GRADLE" || echo "(not found)"
 
-          echo "=== After gradle patch ==="
-          grep -n "implementation files\|exclude group.*sdk-pdf" "$DS_GRADLE" || echo "(no matches - OK)"
-
-          # 3. Remove flatDir referencing libs/ from root build.gradle (added by Expo plugin)
+          # 2. Remove flatDir from root build.gradle (added by Expo plugin, not needed)
           ROOT_BUILD_GRADLE="android/build.gradle"
           if grep -q "flatDir.*libs" "$ROOT_BUILD_GRADLE" 2>/dev/null; then
             echo "=== Removing flatDir from root build.gradle ==="
@@ -192,14 +186,17 @@ jobs:
           }
           GRADLEOF
 
-      # ── 12. Patch Glide class exclusion (sdk-pdf collides with expo-image) ─
-      - name: Patch Glide class exclusion
+      # ── 12. Add stripped DocuSign AAR to app build (for runtime) ────────────
+      # The module uses compileOnly for the stripped AAR (not packaged in AAR).
+      # The app needs it at runtime, so we add implementation files(...) here.
+      - name: Add stripped DocuSign AAR to app build
         working-directory: app
         run: |
+          DS_AAR_PATH="../../node_modules/react-native-docusign/android/libs/sdk-pdf-2.1.4-stripped.aar"
           echo '' >> android/app/build.gradle
-          echo '// Exclude Glide class from sdk-pdf (collides with expo-image at dex time)' >> android/app/build.gradle
-          echo "android.packagingOptions.excludes += ['**/GeneratedAppGlideModuleImpl.class']" >> android/app/build.gradle
-          echo "=== Glide exclusion patched into app/build.gradle ==="
+          echo '// Stripped sdk-pdf AAR (Glide class removed, avoids dex collision with expo-image)' >> android/app/build.gradle
+          echo "implementation files('$DS_AAR_PATH')" >> android/app/build.gradle
+          echo "=== Stripped AAR dependency added to app/build.gradle ==="
 
       # ── 13. Build release APK (arm64 only for speed) ──────────────────────
       - name: Build APK
