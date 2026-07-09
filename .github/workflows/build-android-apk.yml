@@ -120,19 +120,28 @@ jobs:
           printf '{"android":{"keystore":{"keystorePath":"release.keystore","keystorePassword":"%s","keyAlias":"%s","keyPassword":"%s"}}}' \
             "${KS_PASSWORD}" "${KS_ALIAS}" "${KS_KEY_PASSWORD}" > credentials.json
 
-      # ── 9. Strip DocuSign AAR ──────────────────────────────────────────────
-      - name: Strip DocuSign AAR
-        working-directory: app
-        run: bash scripts/strip-docusign-aar.sh
-
-      # ── 10. Generate native Android project ────────────────────────────────
+      # ── 9. Generate native Android project ──────────────────────────────────
+      # Expo config plugin (react-native-docusign) strips AAR + adds Maven repo during prebuild.
       - name: Run expo prebuild
         working-directory: app
         run: npx expo prebuild --platform android --clean
 
+      # ── 10. Patch DocuSign to use Maven (drop local AAR) ───────────────────
+      # react-native-docusign's build.gradle uses a local stripped .aar which
+      # breaks bundleReleaseAar. Replace with pure Maven dependency.
+      - name: Patch DocuSign to Maven-only
+        working-directory: app
+        run: |
+          DS_GRADLE="node_modules/react-native-docusign/android/build.gradle"
+          if [ -f "$DS_GRADLE" ]; then
+            # Remove the local AAR file dependency line
+            sed -i '/implementation files.*sdk-pdf.*\.aar/d' "$DS_GRADLE"
+            # Remove the sdk-pdf exclusion from the main SDK dependency
+            sed -i "/exclude group: 'com.docusign', module: 'sdk-pdf'/d" "$DS_GRADLE"
+          fi
+
       # ── 11. Patch JVM target alignment ─────────────────────────────────────
       # Align all Android subprojects to Java 17 (stable for RN builds).
-      # Uses string-based checks only (no class imports) to avoid classpath issues.
       - name: Patch JVM target alignment
         working-directory: app
         run: |
