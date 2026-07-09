@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Branch to build from coco-patient-mobile'
-        required: false
+        description: 'Branch to build (e.g. develop, main, feat/xyz)'
+        required: true
         default: 'develop'
       environment:
         description: 'Build environment'
@@ -35,8 +35,8 @@ jobs:
       - name: Checkout coco-patient-mobile
         uses: actions/checkout@v4
         with:
-          repository: virajpsimformsolutions/coco-patient-mobile
-          ref: ${{ github.event.inputs.branch || 'develop' }}
+          repository: coco-staging/Coco-patient-mobile
+          ref: ${{ github.event.inputs.branch }}
           path: app
           token: ${{ secrets.COCO_PAT }}
 
