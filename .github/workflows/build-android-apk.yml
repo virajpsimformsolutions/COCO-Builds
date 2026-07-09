@@ -134,6 +134,7 @@ jobs:
       # react-native-docusign compiles Kotlin with JVM 21 but Java defaults to 17.
       # We inject a gradle.projectsEvaluated hook into the root build.gradle that
       # sets Java source/target to 21 for all subprojects, aligning with Kotlin.
+      # Uses string-based checks only (no class imports) to avoid classpath issues.
       - name: Patch JVM target alignment
         working-directory: app
         run: |
@@ -141,23 +142,25 @@ jobs:
 
           gradle.projectsEvaluated {
             subprojects { project ->
-              project.plugins.withType(com.android.build.gradle.AppPlugin) {
-                project.android.compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_21
-                  targetCompatibility JavaVersion.VERSION_21
-                }
-              }
-              project.plugins.withType(com.android.build.gradle.LibraryPlugin) {
-                project.android.compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_21
-                  targetCompatibility JavaVersion.VERSION_21
-                }
-              }
-              project.plugins.withType(org.jetbrains.kotlin.gradle.internal.AndroidExtensionsExtension) {
-                project.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
-                  kotlinOptions {
-                    jvmTarget = '21'
+              project.plugins.withId('com.android.application') {
+                project.extensions.getByName('android') { android ->
+                  android.compileOptions {
+                    sourceCompatibility JavaVersion.VERSION_21
+                    targetCompatibility JavaVersion.VERSION_21
                   }
+                }
+              }
+              project.plugins.withId('com.android.library') {
+                project.extensions.getByName('android') { android ->
+                  android.compileOptions {
+                    sourceCompatibility JavaVersion.VERSION_21
+                    targetCompatibility JavaVersion.VERSION_21
+                  }
+                }
+              }
+              project.tasks.configureEach { task ->
+                if (task.class.name.contains('KotlinCompile')) {
+                  task.kotlinOptions.jvmTarget = '21'
                 }
               }
             }
