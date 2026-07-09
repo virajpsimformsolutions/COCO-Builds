@@ -130,32 +130,13 @@ jobs:
         working-directory: app
         run: npx expo prebuild --platform android --clean
 
-      # ── 11. Patch JVM target alignment ─────────────────────────────────────
-      - name: Patch JVM target alignment
+      # ── 11. Disable Kotlin JVM target validation ──────────────────────────
+      # react-native-docusign compiles Kotlin with JVM 21 but Java defaults to 17.
+      # Instead of patching build.gradle (which breaks with Gradle 9's afterEvaluate),
+      # we tell Kotlin to warn instead of failing on mismatched JVM targets.
+      - name: Disable Kotlin JVM target validation
         working-directory: app
-        run: |
-          cat >> android/build.gradle << 'GRADLEOF'
-
-          subprojects {
-            afterEvaluate { project ->
-              if (project.hasProperty('android')) {
-                project.android {
-                  compileOptions {
-                    sourceCompatibility JavaVersion.VERSION_21
-                    targetCompatibility JavaVersion.VERSION_21
-                  }
-                }
-              }
-              if (project.plugins.hasPlugin('org.jetbrains.kotlin.android')) {
-                project.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
-                  kotlinOptions {
-                    jvmTarget = '21'
-                  }
-                }
-              }
-            }
-          }
-          GRADLEOF
+        run: echo 'kotlin.jvm.target.validation.mode=warning' >> android/gradle.properties
 
       # ── 12. Build release APK (arm64 only for speed) ──────────────────────
       - name: Build APK
