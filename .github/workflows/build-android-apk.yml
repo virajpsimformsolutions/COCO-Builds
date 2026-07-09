@@ -41,11 +41,11 @@ jobs:
           token: ${{ secrets.COCO_PAT }}
 
       # ── 3. Setup tools ─────────────────────────────────────────────────────
-      - name: Setup Java 21
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '21'
+          java-version: '17'
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -131,9 +131,7 @@ jobs:
         run: npx expo prebuild --platform android --clean
 
       # ── 11. Patch JVM target alignment ─────────────────────────────────────
-      # react-native-docusign compiles Kotlin with JVM 21 but Java defaults to 17.
-      # We inject a gradle.projectsEvaluated hook into the root build.gradle that
-      # sets Java source/target to 21 for all subprojects, aligning with Kotlin.
+      # Align all Android subprojects to Java 17 (stable for RN builds).
       # Uses string-based checks only (no class imports) to avoid classpath issues.
       - name: Patch JVM target alignment
         working-directory: app
@@ -144,19 +142,19 @@ jobs:
             subprojects { sub ->
               sub.plugins.withId('com.android.application') {
                 sub.android.compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_21
-                  targetCompatibility JavaVersion.VERSION_21
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
                 }
               }
               sub.plugins.withId('com.android.library') {
                 sub.android.compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_21
-                  targetCompatibility JavaVersion.VERSION_21
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
                 }
               }
               sub.tasks.configureEach { task ->
                 if (task.class.name.contains('KotlinCompile')) {
-                  task.kotlinOptions.jvmTarget = '21'
+                  task.kotlinOptions.jvmTarget = '17'
                 }
               }
             }
