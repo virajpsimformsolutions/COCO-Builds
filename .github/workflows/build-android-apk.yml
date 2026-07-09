@@ -195,7 +195,7 @@ jobs:
           DS_AAR_PATH="../../node_modules/react-native-docusign/android/libs/sdk-pdf-2.1.4-stripped.aar"
           echo '' >> android/app/build.gradle
           echo '// Stripped sdk-pdf AAR (Glide class removed, avoids dex collision with expo-image)' >> android/app/build.gradle
-          echo "implementation files('$DS_AAR_PATH')" >> android/app/build.gradle
+          echo "project.dependencies.add('implementation', files('$DS_AAR_PATH'))" >> android/app/build.gradle
           echo "=== Stripped AAR dependency added to app/build.gradle ==="
 
       # ── 13. Build release APK (arm64 only for speed) ──────────────────────
