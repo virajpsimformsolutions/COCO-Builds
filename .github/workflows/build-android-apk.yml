@@ -121,7 +121,7 @@ jobs:
             "${KS_PASSWORD}" "${KS_ALIAS}" "${KS_KEY_PASSWORD}" > credentials.json
 
       # ── 9. Generate native Android project ──────────────────────────────────
-      # Expo config plugin (react-native-docusign) strips AAR + adds Maven repo during prebuild.
+      # Expo config plugins (including react-native-docusign's Maven repo) run here.
       - name: Run expo prebuild
         working-directory: app
         run: npx expo prebuild --platform android --clean
@@ -192,12 +192,21 @@ jobs:
           }
           GRADLEOF
 
-      # ── 12. Build release APK (arm64 only for speed) ──────────────────────
+      # ── 12. Patch Glide class exclusion (sdk-pdf collides with expo-image) ─
+      - name: Patch Glide class exclusion
+        working-directory: app
+        run: |
+          echo '' >> android/app/build.gradle
+          echo '// Exclude Glide class from sdk-pdf (collides with expo-image at dex time)' >> android/app/build.gradle
+          echo "android.packagingOptions.excludes += ['**/GeneratedAppGlideModuleImpl.class']" >> android/app/build.gradle
+          echo "=== Glide exclusion patched into app/build.gradle ==="
+
+      # ── 13. Build release APK (arm64 only for speed) ──────────────────────
       - name: Build APK
         working-directory: app/android
         run: ./gradlew assembleRelease --parallel --build-cache -PreactNativeArchitectures=arm64-v8a -x lint
 
-      # ── 13. Upload APK artifact ────────────────────────────────────────────
+      # ── 14. Upload APK artifact ────────────────────────────────────────────
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
