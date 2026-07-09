@@ -141,24 +141,20 @@ jobs:
           cat >> android/build.gradle << 'GRADLEOF'
 
           gradle.projectsEvaluated {
-            subprojects { project ->
-              project.plugins.withId('com.android.application') {
-                project.extensions.getByName('android') { android ->
-                  android.compileOptions {
-                    sourceCompatibility JavaVersion.VERSION_21
-                    targetCompatibility JavaVersion.VERSION_21
-                  }
+            subprojects { sub ->
+              sub.plugins.withId('com.android.application') {
+                sub.android.compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_21
+                  targetCompatibility JavaVersion.VERSION_21
                 }
               }
-              project.plugins.withId('com.android.library') {
-                project.extensions.getByName('android') { android ->
-                  android.compileOptions {
-                    sourceCompatibility JavaVersion.VERSION_21
-                    targetCompatibility JavaVersion.VERSION_21
-                  }
+              sub.plugins.withId('com.android.library') {
+                sub.android.compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_21
+                  targetCompatibility JavaVersion.VERSION_21
                 }
               }
-              project.tasks.configureEach { task ->
+              sub.tasks.configureEach { task ->
                 if (task.class.name.contains('KotlinCompile')) {
                   task.kotlinOptions.jvmTarget = '21'
                 }
