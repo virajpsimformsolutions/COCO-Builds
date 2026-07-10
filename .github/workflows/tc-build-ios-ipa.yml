@@ -30,7 +30,7 @@ on:
 jobs:
   build-ios:
     name: TC Build IPA (${{ github.event.inputs.environment || 'production' }})
-    runs-on: macos-latest
+    runs-on: macos-15
     timeout-minutes: 90
 
     steps:
@@ -63,6 +63,20 @@ jobs:
         with:
           ruby-version: '3.3'
           bundler-cache: false
+
+      # ── 3.5. Pin Xcode version ───────────────────────────────────────────────
+      # macos-15 defaults to Xcode 16.4, but pin explicitly in case GitHub changes
+      # the image default. Newer Xcode (26.x, picked up automatically when this
+      # workflow ran on macos-latest before it was pinned) enables Explicit
+      # Modules by default, which breaks RCT_EXPORT_MODULE/RCT_EXPORT_METHOD
+      # macro visibility in react-native-firebase's RNFBMessaging - see
+      # "declaration of 'RCTPromiseRejectBlock' must be imported from module
+      # 'RNFBApp...' before it is required" in Archive step failures.
+      - name: Select Xcode 16.4
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.4.app 2>/dev/null || \
+          { echo "Xcode 16.4 not found. Available versions:"; ls /Applications/Xcode*.app 2>/dev/null || echo "No Xcode*.app found"; echo "Current: $(xcode-select -p)"; exit 1; }
+          xcodebuild -version
 
       # ── 4. Install dependencies ────────────────────────────────────────────
       - name: Install dependencies
