@@ -109,11 +109,13 @@ jobs:
             echo "EXPO_PUBLIC_SOCKET_PIN_EXPIRES_AT=${ENV_SOCKET_PIN_EXPIRY}"
           } > .env
 
-      # ── 6. Import Apple signing certificate ────────────────────────────────
-      - name: Import Apple Distribution Certificate
+      # ── 6. Import Apple signing certificates (app + NSE) ──────────────────
+      - name: Import Apple Signing Certificates
         env:
-          CERT_BASE64: ${{ secrets.COCO_TC_IOS_DIST_CERT_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.COCO_TC_IOS_DIST_CERT_PASSWORD }}
+          APP_CERT_BASE64: ${{ secrets.COCO_TC_IOS_DIST_CERT_BASE64 }}
+          APP_CERT_PASSWORD: ${{ secrets.COCO_TC_IOS_DIST_CERT_PASSWORD }}
+          NSE_CERT_BASE64: ${{ secrets.COCO_TC_IOS_NSE_DIST_CERT_BASE64 }}
+          NSE_CERT_PASSWORD: ${{ secrets.COCO_TC_IOS_NSE_DIST_CERT_PASSWORD }}
         run: |
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
           KEYCHAIN_PASSWORD="coco-tc-build-$(uuidgen)"
@@ -123,10 +125,15 @@ jobs:
           security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          # Import certificate
-          echo "$CERT_BASE64" | base64 -d > /tmp/dist.p12
-          security import /tmp/dist.p12 -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          rm /tmp/dist.p12
+          # Import app certificate
+          echo "$APP_CERT_BASE64" | base64 -d > /tmp/app-dist.p12
+          security import /tmp/app-dist.p12 -P "$APP_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          rm /tmp/app-dist.p12
+
+          # Import NSE certificate
+          echo "$NSE_CERT_BASE64" | base64 -d > /tmp/nse-dist.p12
+          security import /tmp/nse-dist.p12 -P "$NSE_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          rm /tmp/nse-dist.p12
 
           # Add to keychain search list
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
@@ -134,13 +141,26 @@ jobs:
 
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
 
-      # ── 7. Install provisioning profile ─────────────────────────────────────
-      - name: Install Provisioning Profile
+      # ── 7. Install provisioning profiles (app + NSE) ──────────────────────
+      - name: Install Provisioning Profiles
         env:
-          PROV_BASE64: ${{ secrets.COCO_TC_IOS_PROVISIONING_PROFILE_BASE64 }}
+          APP_PROV_BASE64: ${{ secrets.COCO_TC_IOS_PROVISIONING_PROFILE_BASE64 }}
+          NSE_PROV_BASE64: ${{ secrets.COCO_TC_IOS_NSE_PROVISIONING_PROFILE_BASE64 }}
         run: |
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          echo "$PROV_BASE64" | base64 -d > ~/Library/MobileDevice/Provisioning\ Profiles/coco-tc-release.mobileprovision
+          PROFILE_DIR=~/Library/MobileDevice/Provisioning\ Profiles
+          mkdir -p "$PROFILE_DIR"
+
+          # Install app profile with UUID name
+          echo "$APP_PROV_BASE64" | base64 -d > /tmp/app.mobileprovision
+          APP_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< "$(security cms -D -i /tmp/app.mobileprovision)")
+          cp /tmp/app.mobileprovision "$PROFILE_DIR/$APP_UUID.mobileprovision"
+          echo "App profile UUID: $APP_UUID"
+
+          # Install NSE profile with UUID name
+          echo "$NSE_PROV_BASE64" | base64 -d > /tmp/nse.mobileprovision
+          NSE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< "$(security cms -D -i /tmp/nse.mobileprovision)")
+          cp /tmp/nse.mobileprovision "$PROFILE_DIR/$NSE_UUID.mobileprovision"
+          echo "NSE profile UUID: $NSE_UUID"
 
       # ── 8. Generate native iOS project ──────────────────────────────────────
       - name: Run expo prebuild
@@ -162,7 +182,30 @@ jobs:
           echo "SCHEME=$SCHEME" >> $GITHUB_OUTPUT
           echo "Resolved scheme: $SCHEME"
 
-      # ── 11. Archive ─────────────────────────────────────────────────────────
+      # ── 11. Resolve bundle IDs from app.config.ts ──────────────────────────
+      - name: Resolve bundle IDs
+        working-directory: app
+        id: bundles
+        run: |
+          ENV="${{ github.event.inputs.environment || 'production' }}"
+          case "$ENV" in
+            development)
+              APP_BUNDLE="com.cocointel.practice.dev"
+              ;;
+            preview)
+              APP_BUNDLE="com.cocointel.practice.preview"
+              ;;
+            production|*)
+              APP_BUNDLE="com.cocointel.practice"
+              ;;
+          esac
+          NSE_BUNDLE="${APP_BUNDLE}.NotifyKitNSE"
+          echo "APP_BUNDLE=$APP_BUNDLE" >> $GITHUB_OUTPUT
+          echo "NSE_BUNDLE=$NSE_BUNDLE" >> $GITHUB_OUTPUT
+          echo "App bundle: $APP_BUNDLE"
+          echo "NSE bundle: $NSE_BUNDLE"
+
+      # ── 12. Archive ─────────────────────────────────────────────────────────
       - name: Archive
         working-directory: app/ios
         run: |
@@ -176,7 +219,7 @@ jobs:
             DEVELOPMENT_TEAM=Z8778PLB65 \
             ONLY_ACTIVE_ARCH=NO
 
-      # ── 12. Export IPA ──────────────────────────────────────────────────────
+      # ── 13. Export IPA ──────────────────────────────────────────────────────
       - name: Export IPA
         run: |
           EXPORT_METHOD="${{ github.event.inputs.export-method || 'app-store' }}"
@@ -189,10 +232,19 @@ jobs:
             <string>${EXPORT_METHOD}</string>
             <key>teamID</key>
             <string>Z8778PLB65</string>
+            <key>signingStyle</key>
+            <string>manual</string>
             <key>compileBitcode</key>
             <false/>
             <key>uploadSymbols</key>
             <true/>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${{ steps.bundles.outputs.APP_BUNDLE }}</key>
+              <string>CocoPracticeDev</string>
+              <key>${{ steps.bundles.outputs.NSE_BUNDLE }}</key>
+              <string>NotifyKitNSE</string>
+            </dict>
           </dict>
           </plist>
           EOF
@@ -203,12 +255,12 @@ jobs:
             -exportOptionsPlist /tmp/export.plist \
             -allowProvisioningUpdates
 
-      # ── 13. Get source commit SHA ──────────────────────────────────────────
+      # ── 14. Get source commit SHA ──────────────────────────────────────────
       - name: Get source commit SHA
         working-directory: app
         run: echo "SOURCE_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
 
-      # ── 14. Create tag + GitHub Release ────────────────────────────────────
+      # ── 15. Create tag + GitHub Release ────────────────────────────────────
       - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.COCO_PAT }}
