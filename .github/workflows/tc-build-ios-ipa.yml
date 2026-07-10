@@ -109,33 +109,23 @@ jobs:
             echo "EXPO_PUBLIC_SOCKET_PIN_EXPIRES_AT=${ENV_SOCKET_PIN_EXPIRY}"
           } > .env
 
-      # ── 6. Import Apple signing certificates (app + NSE) ──────────────────
-      - name: Import Apple Signing Certificates
+      # ── 6. Import Apple distribution certificate (combined: app + NSE) ─────
+      - name: Import Apple Distribution Certificate
         env:
-          APP_CERT_BASE64: ${{ secrets.COCO_TC_IOS_DIST_CERT_BASE64 }}
-          APP_CERT_PASSWORD: ${{ secrets.COCO_TC_IOS_DIST_CERT_PASSWORD }}
-          NSE_CERT_BASE64: ${{ secrets.COCO_TC_IOS_NSE_DIST_CERT_BASE64 }}
-          NSE_CERT_PASSWORD: ${{ secrets.COCO_TC_IOS_NSE_DIST_CERT_PASSWORD }}
+          CERT_BASE64: ${{ secrets.COCO_TC_IOS_DIST_CERT_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.COCO_TC_IOS_DIST_CERT_PASSWORD }}
         run: |
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
           KEYCHAIN_PASSWORD="coco-tc-build-$(uuidgen)"
 
-          # Create temporary keychain
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          # Import app certificate
-          echo "$APP_CERT_BASE64" | base64 -d > /tmp/app-dist.p12
-          security import /tmp/app-dist.p12 -P "$APP_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          rm /tmp/app-dist.p12
+          echo "$CERT_BASE64" | base64 -d > /tmp/dist.p12
+          security import /tmp/dist.p12 -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          rm /tmp/dist.p12
 
-          # Import NSE certificate
-          echo "$NSE_CERT_BASE64" | base64 -d > /tmp/nse-dist.p12
-          security import /tmp/nse-dist.p12 -P "$NSE_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          rm /tmp/nse-dist.p12
-
-          # Add to keychain search list
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
@@ -216,10 +206,8 @@ jobs:
             -scheme '${{ steps.scheme.outputs.SCHEME }}' \
             -configuration Release \
             -archivePath "$RUNNER_TEMP/coco-tc.xcarchive" \
-            CODE_SIGN_STYLE=Manual \
+            -allowProvisioningUpdates \
             DEVELOPMENT_TEAM=Z8778PLB65 \
-            PROVISIONING_PROFILE_SPECIFIER="${{ env.APP_PROFILE_UUID }}" \
-            "PROVISIONING_PROFILE_SPECIFIER[target=NotifyKitNSE]"="${{ env.NSE_PROFILE_UUID }}" \
             ONLY_ACTIVE_ARCH=NO
 
       # ── 13. Export IPA ──────────────────────────────────────────────────────
@@ -235,19 +223,12 @@ jobs:
             <string>${EXPORT_METHOD}</string>
             <key>teamID</key>
             <string>Z8778PLB65</string>
-            <key>signingStyle</key>
-            <string>manual</string>
             <key>compileBitcode</key>
             <false/>
             <key>uploadSymbols</key>
             <true/>
-            <key>provisioningProfiles</key>
-            <dict>
-              <key>${{ steps.bundles.outputs.APP_BUNDLE }}</key>
-              <string>${{ env.APP_PROFILE_UUID }}</string>
-              <key>${{ steps.bundles.outputs.NSE_BUNDLE }}</key>
-              <string>${{ env.NSE_PROFILE_UUID }}</string>
-            </dict>
+            <key>signingStyle</key>
+            <string>automatic</string>
           </dict>
           </plist>
           EOF
