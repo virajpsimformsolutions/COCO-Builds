@@ -1,0 +1,225 @@
+name: "[TC] Build iOS IPA (Release)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build (e.g. develop, main, feat/xyz)'
+        required: true
+        default: 'develop'
+      environment:
+        description: 'Build environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - development
+          - preview
+          - production
+      export-method:
+        description: 'Export method'
+        required: true
+        default: 'app-store'
+        type: choice
+        options:
+          - app-store
+          - enterprise
+          - ad-hoc
+          - development
+
+jobs:
+  build-ios:
+    name: TC Build IPA (${{ github.event.inputs.environment || 'production' }})
+    runs-on: macos-latest
+    timeout-minutes: 90
+
+    steps:
+      # ── 1. Checkout COCO-Builds (workflow repo) ────────────────────────────
+      - name: Checkout COCO-Builds
+        uses: actions/checkout@v4
+        with:
+          repository: virajpsimformsolutions/COCO-Builds
+          token: ${{ secrets.COCO_PAT }}
+
+      # ── 2. Checkout coco-mobile source ─────────────────────────────────────
+      - name: Checkout coco-mobile
+        uses: actions/checkout@v4
+        with:
+          repository: coco-staging/coco-mobile
+          ref: ${{ github.event.inputs.branch }}
+          path: app
+          token: ${{ secrets.COCO_PAT }}
+
+      # ── 3. Setup tools ─────────────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.4'
+          cache: 'yarn'
+          cache-dependency-path: app/yarn.lock
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: false
+
+      # ── 4. Install dependencies ────────────────────────────────────────────
+      - name: Install dependencies
+        working-directory: app
+        run: yarn install --frozen-lockfile
+
+      # ── 5. Write .env file from secrets ────────────────────────────────────
+      - name: Write .env file
+        working-directory: app
+        env:
+          ENV_API_URL: ${{ secrets.COCO_TC_API_URL }}
+          ENV_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
+          ENV_SENTRY_URL: ${{ secrets.COCO_TC_SENTRY_URL }}
+          ENV_SENTRY_DSN: ${{ secrets.COCO_TC_SENTRY_DSN }}
+          ENV_SENTRY_PROJECT: ${{ secrets.COCO_TC_SENTRY_PROJECT }}
+          ENV_SENTRY_ORG: ${{ secrets.COCO_TC_SENTRY_ORG }}
+          ENV_SENTRY_TOKEN: ${{ secrets.COCO_TC_SENTRY_TOKEN }}
+          ENV_AZURE_CLIENT_ID: ${{ secrets.COCO_TC_AZURE_CLIENT_ID }}
+          ENV_AZURE_TENANT_ID: ${{ secrets.COCO_TC_AZURE_TENANT_ID }}
+          ENV_AZURE_REDIRECT_URI: ${{ secrets.COCO_TC_AZURE_REDIRECT_URI }}
+          ENV_STORAGE_ENCRYPTION_KEY: ${{ secrets.COCO_TC_STORAGE_ENCRYPTION_KEY }}
+          ENV_SOCKET_URL: ${{ secrets.COCO_TC_SOCKET_URL }}
+          ENV_API_PIN: ${{ secrets.COCO_TC_API_PIN_SHA256 }}
+          ENV_SOCKET_PIN: ${{ secrets.COCO_TC_SOCKET_PIN_SHA256 }}
+          ENV_API_PIN_EXPIRY: ${{ secrets.COCO_TC_API_PIN_EXPIRES_AT }}
+          ENV_SOCKET_PIN_EXPIRY: ${{ secrets.COCO_TC_SOCKET_PIN_EXPIRES_AT }}
+        run: |
+          {
+            echo "EXPO_PUBLIC_API_URL=${ENV_API_URL}"
+            echo "EXPO_PUBLIC_ENVIRONMENT=${ENV_ENVIRONMENT}"
+            echo "EXPO_PUBLIC_SENTRY_URL=${ENV_SENTRY_URL}"
+            echo "EXPO_SENTRY_URL=${ENV_SENTRY_DSN}"
+            echo "EXPO_SENTRY_PROJECT_NAME=${ENV_SENTRY_PROJECT}"
+            echo "EXPO_SENTRY_ORGANIZATION=${ENV_SENTRY_ORG}"
+            echo "SENTRY_AUTH_TOKEN=${ENV_SENTRY_TOKEN}"
+            echo "EXPO_PUBLIC_AZURE_CLIENT_ID=${ENV_AZURE_CLIENT_ID}"
+            echo "EXPO_PUBLIC_AZURE_TENANT_ID=${ENV_AZURE_TENANT_ID}"
+            echo "EXPO_PUBLIC_AZURE_REDIRECT_URI=${ENV_AZURE_REDIRECT_URI}"
+            echo "EXPO_PUBLIC_STORAGE_ENCRYPTION_KEY=${ENV_STORAGE_ENCRYPTION_KEY}"
+            echo "EXPO_PUBLIC_SOCKET_URL=${ENV_SOCKET_URL}"
+            echo "EXPO_PUBLIC_API_PIN_SHA256=${ENV_API_PIN}"
+            echo "EXPO_PUBLIC_SOCKET_PIN_SHA256=${ENV_SOCKET_PIN}"
+            echo "EXPO_PUBLIC_API_PIN_EXPIRES_AT=${ENV_API_PIN_EXPIRY}"
+            echo "EXPO_PUBLIC_SOCKET_PIN_EXPIRES_AT=${ENV_SOCKET_PIN_EXPIRY}"
+          } > .env
+
+      # ── 6. Import Apple signing certificate ────────────────────────────────
+      - name: Import Apple Distribution Certificate
+        env:
+          CERT_BASE64: ${{ secrets.COCO_TC_IOS_DIST_CERT_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.COCO_TC_IOS_DIST_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PASSWORD="coco-tc-build-$(uuidgen)"
+
+          # Create temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import certificate
+          echo "$CERT_BASE64" | base64 -d > /tmp/dist.p12
+          security import /tmp/dist.p12 -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          rm /tmp/dist.p12
+
+          # Add to keychain search list
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+
+      # ── 7. Install provisioning profile ─────────────────────────────────────
+      - name: Install Provisioning Profile
+        env:
+          PROV_BASE64: ${{ secrets.COCO_TC_IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "$PROV_BASE64" | base64 -d > ~/Library/MobileDevice/Provisioning\ Profiles/coco-tc-release.mobileprovision
+
+      # ── 8. Generate native iOS project ──────────────────────────────────────
+      - name: Run expo prebuild
+        working-directory: app
+        run: npx expo prebuild --platform ios --clean
+
+      # ── 9. Install CocoaPods ────────────────────────────────────────────────
+      - name: Install CocoaPods
+        working-directory: app/ios
+        run: pod install
+
+      # ── 10. Determine scheme and app name ───────────────────────────────────
+      - name: Resolve scheme
+        working-directory: app
+        id: scheme
+        run: |
+          SCHEME=$(xcodebuild -list -project ios/*.xcodeproj 2>/dev/null | grep -A1 "Schemes:" | tail -1 | xargs || \
+                  xcodebuild -list -workspace ios/*.xcworkspace 2>/dev/null | grep -A1 "Schemes:" | tail -1 | xargs)
+          echo "SCHEME=$SCHEME" >> $GITHUB_OUTPUT
+          echo "Resolved scheme: $SCHEME"
+
+      # ── 11. Archive ─────────────────────────────────────────────────────────
+      - name: Archive
+        working-directory: app/ios
+        run: |
+          xcodebuild archive \
+            -workspace *.xcworkspace \
+            -scheme '${{ steps.scheme.outputs.SCHEME }}' \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/coco-tc.xcarchive" \
+            -allowProvisioningUpdates \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM=Z8778PLB65 \
+            ONLY_ACTIVE_ARCH=NO
+
+      # ── 12. Export IPA ──────────────────────────────────────────────────────
+      - name: Export IPA
+        run: |
+          EXPORT_METHOD="${{ github.event.inputs.export-method || 'app-store' }}"
+          cat > /tmp/export.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>${EXPORT_METHOD}</string>
+            <key>teamID</key>
+            <string>Z8778PLB65</string>
+            <key>compileBitcode</key>
+            <false/>
+            <key>uploadSymbols</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/coco-tc.xcarchive" \
+            -exportPath "$RUNNER_TEMP/ipa" \
+            -exportOptionsPlist /tmp/export.plist \
+            -allowProvisioningUpdates
+
+      # ── 13. Get source commit SHA ──────────────────────────────────────────
+      - name: Get source commit SHA
+        working-directory: app
+        run: echo "SOURCE_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+      # ── 14. Create tag + GitHub Release ────────────────────────────────────
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.COCO_TC_PAT }}
+        run: |
+          TAG="tc-build-ipa-${{ github.event.inputs.environment || 'production' }}-$(date +%Y%m%d)-${SOURCE_SHA:0:7}"
+          NOTES="Branch: ${{ github.event.inputs.branch }}
+          Environment: ${{ github.event.inputs.environment || 'production' }}
+          Export method: ${{ github.event.inputs.export-method || 'app-store' }}
+          Commit: ${SOURCE_SHA}"
+          gh release create "$TAG" \
+            --repo coco-staging/coco-mobile \
+            --title "TC IPA ${{ github.event.inputs.environment || 'production' }} $(date '+%Y-%m-%d')" \
+            --notes "$NOTES" \
+            ${{ runner.temp }}/ipa/*.ipa
