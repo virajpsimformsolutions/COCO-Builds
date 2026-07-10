@@ -179,7 +179,7 @@ jobs:
       # ── 14. Create tag + GitHub Release ────────────────────────────────────
       - name: Create Release
         env:
-          GH_TOKEN: ${{ secrets.COCO_TC_PAT }}
+          GH_TOKEN: ${{ secrets.COCO_PAT }}
         run: |
           TAG="tc-build-aab-${{ github.event.inputs.environment || 'production' }}-$(date +%Y%m%d)-${SOURCE_SHA:0:7}"
           NOTES="Branch: ${{ github.event.inputs.branch }}
