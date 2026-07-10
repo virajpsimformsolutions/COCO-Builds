@@ -165,6 +165,9 @@ jobs:
         run: pod install
 
       # ── 10. Inject manual signing settings into pbxproj ────────────────────
+      - name: Install xcodeproj gem
+        run: gem install xcodeproj --no-document
+
       - name: Configure manual signing in pbxproj
         working-directory: app/ios
         env:
