@@ -188,6 +188,7 @@ jobs:
               target.build_configurations.each do |config|
                 config.build_settings["CODE_SIGN_STYLE"] = "Manual"
                 config.build_settings["DEVELOPMENT_TEAM"] = team_id
+                config.build_settings["CODE_SIGN_IDENTITY"] = "Apple Distribution"
 
                 if target.name == "CocoPracticeDev" || target.name == "coco-mobile"
                   config.build_settings["PROVISIONING_PROFILE_SPECIFIER"] = app_uuid
@@ -244,6 +245,7 @@ jobs:
             -configuration Release \
             -archivePath "$RUNNER_TEMP/coco-tc.xcarchive" \
             CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
             DEVELOPMENT_TEAM=Z8778PLB65 \
             ONLY_ACTIVE_ARCH=NO
 
