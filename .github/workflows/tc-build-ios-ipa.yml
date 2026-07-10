@@ -122,7 +122,7 @@ jobs:
           security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          echo "$CERT_BASE64" | base64 -d > /tmp/dist.p12
+          echo "$CERT_BASE64" | tr -d '[:space:]' | base64 -d > /tmp/dist.p12
           security import /tmp/dist.p12 -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
           rm /tmp/dist.p12
 
@@ -141,14 +141,14 @@ jobs:
           mkdir -p "$PROFILE_DIR"
 
           # Install app profile with UUID name
-          echo "$APP_PROV_BASE64" | base64 -d > /tmp/app.mobileprovision
+          echo "$APP_PROV_BASE64" | tr -d '[:space:]' | base64 -d > /tmp/app.mobileprovision
           APP_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< "$(security cms -D -i /tmp/app.mobileprovision)")
           cp /tmp/app.mobileprovision "$PROFILE_DIR/$APP_UUID.mobileprovision"
           echo "App profile UUID: $APP_UUID"
           echo "APP_PROFILE_UUID=$APP_UUID" >> $GITHUB_ENV
 
           # Install NSE profile with UUID name
-          echo "$NSE_PROV_BASE64" | base64 -d > /tmp/nse.mobileprovision
+          echo "$NSE_PROV_BASE64" | tr -d '[:space:]' | base64 -d > /tmp/nse.mobileprovision
           NSE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< "$(security cms -D -i /tmp/nse.mobileprovision)")
           cp /tmp/nse.mobileprovision "$PROFILE_DIR/$NSE_UUID.mobileprovision"
           echo "NSE profile UUID: $NSE_UUID"
