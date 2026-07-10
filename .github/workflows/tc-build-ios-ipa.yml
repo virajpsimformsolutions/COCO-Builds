@@ -155,12 +155,14 @@ jobs:
           APP_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< "$(security cms -D -i /tmp/app.mobileprovision)")
           cp /tmp/app.mobileprovision "$PROFILE_DIR/$APP_UUID.mobileprovision"
           echo "App profile UUID: $APP_UUID"
+          echo "APP_PROFILE_UUID=$APP_UUID" >> $GITHUB_ENV
 
           # Install NSE profile with UUID name
           echo "$NSE_PROV_BASE64" | base64 -d > /tmp/nse.mobileprovision
           NSE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< "$(security cms -D -i /tmp/nse.mobileprovision)")
           cp /tmp/nse.mobileprovision "$PROFILE_DIR/$NSE_UUID.mobileprovision"
           echo "NSE profile UUID: $NSE_UUID"
+          echo "NSE_PROFILE_UUID=$NSE_UUID" >> $GITHUB_ENV
 
       # ── 8. Generate native iOS project ──────────────────────────────────────
       - name: Run expo prebuild
@@ -214,9 +216,10 @@ jobs:
             -scheme '${{ steps.scheme.outputs.SCHEME }}' \
             -configuration Release \
             -archivePath "$RUNNER_TEMP/coco-tc.xcarchive" \
-            -allowProvisioningUpdates \
             CODE_SIGN_STYLE=Manual \
             DEVELOPMENT_TEAM=Z8778PLB65 \
+            PROVISIONING_PROFILE_SPECIFIER="${{ env.APP_PROFILE_UUID }}" \
+            "PROVISIONING_PROFILE_SPECIFIER[target=NotifyKitNSE]"="${{ env.NSE_PROFILE_UUID }}" \
             ONLY_ACTIVE_ARCH=NO
 
       # ── 13. Export IPA ──────────────────────────────────────────────────────
@@ -241,9 +244,9 @@ jobs:
             <key>provisioningProfiles</key>
             <dict>
               <key>${{ steps.bundles.outputs.APP_BUNDLE }}</key>
-              <string>CocoPracticeDev</string>
+              <string>${{ env.APP_PROFILE_UUID }}</string>
               <key>${{ steps.bundles.outputs.NSE_BUNDLE }}</key>
-              <string>NotifyKitNSE</string>
+              <string>${{ env.NSE_PROFILE_UUID }}</string>
             </dict>
           </dict>
           </plist>
