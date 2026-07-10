@@ -197,10 +197,23 @@ jobs:
             -exportOptionsPlist /tmp/export.plist \
             -allowProvisioningUpdates
 
-      # ── 13. Upload IPA artifact ────────────────────────────────────────────
-      - name: Upload IPA
-        uses: actions/upload-artifact@v4
-        with:
-          name: coco-patient-${{ github.event.inputs.environment || 'production' }}-ipa-${{ github.sha }}
-          path: ${{ runner.temp }}/ipa/*.ipa
-          retention-days: 30
+      # ── 13. Get source commit SHA ──────────────────────────────────────────
+      - name: Get source commit SHA
+        working-directory: app
+        run: echo "SOURCE_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+      # ── 14. Create tag + GitHub Release ────────────────────────────────────
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.COCO_PAT }}
+        run: |
+          TAG="build-ipa-${{ github.event.inputs.environment || 'production' }}-$(date +%Y%m%d)-${SOURCE_SHA:0:7}"
+          NOTES="Branch: ${{ github.event.inputs.branch }}
+          Environment: ${{ github.event.inputs.environment || 'production' }}
+          Export method: ${{ github.event.inputs.export-method || 'app-store' }}
+          Commit: ${SOURCE_SHA}"
+          gh release create "$TAG" \
+            --repo coco-staging/Coco-patient-mobile \
+            --title "IPA ${{ github.event.inputs.environment || 'production' }} $(date '+%Y-%m-%d')" \
+            --notes "$NOTES" \
+            ${{ runner.temp }}/ipa/*.ipa

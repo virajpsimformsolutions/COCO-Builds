@@ -210,10 +210,22 @@ jobs:
         working-directory: app/android
         run: ./gradlew assembleRelease --parallel --build-cache -PreactNativeArchitectures=arm64-v8a -x lint
 
-      # ── 15. Upload APK artifact ────────────────────────────────────────────
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: coco-patient-${{ github.event.inputs.environment || 'development' }}-apk-${{ github.sha }}
-          path: app/android/app/build/outputs/apk/release/*.apk
-          retention-days: 30
+      # ── 15. Get source commit SHA ──────────────────────────────────────────
+      - name: Get source commit SHA
+        working-directory: app
+        run: echo "SOURCE_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+      # ── 16. Create tag + GitHub Release ────────────────────────────────────
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.COCO_PAT }}
+        run: |
+          TAG="build-apk-${{ github.event.inputs.environment || 'development' }}-$(date +%Y%m%d)-${SOURCE_SHA:0:7}"
+          NOTES="Branch: ${{ github.event.inputs.branch }}
+          Environment: ${{ github.event.inputs.environment || 'development' }}
+          Commit: ${SOURCE_SHA}"
+          gh release create "$TAG" \
+            --repo coco-staging/Coco-patient-mobile \
+            --title "APK ${{ github.event.inputs.environment || 'development' }} $(date '+%Y-%m-%d')" \
+            --notes "$NOTES" \
+            app/android/app/build/outputs/apk/release/*.apk

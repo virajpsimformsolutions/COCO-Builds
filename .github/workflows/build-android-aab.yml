@@ -184,10 +184,22 @@ jobs:
         working-directory: app/android
         run: ./gradlew bundleRelease --parallel --build-cache -x lint
 
-      # ── 15. Upload AAB artifact ────────────────────────────────────────────
-      - name: Upload AAB
-        uses: actions/upload-artifact@v4
-        with:
-          name: coco-patient-${{ github.event.inputs.environment || 'production' }}-aab-${{ github.sha }}
-          path: app/android/app/build/outputs/bundle/release/*.aab
-          retention-days: 30
+      # ── 15. Get source commit SHA ──────────────────────────────────────────
+      - name: Get source commit SHA
+        working-directory: app
+        run: echo "SOURCE_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+      # ── 16. Create tag + GitHub Release ────────────────────────────────────
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.COCO_PAT }}
+        run: |
+          TAG="build-aab-${{ github.event.inputs.environment || 'production' }}-$(date +%Y%m%d)-${SOURCE_SHA:0:7}"
+          NOTES="Branch: ${{ github.event.inputs.branch }}
+          Environment: ${{ github.event.inputs.environment || 'production' }}
+          Commit: ${SOURCE_SHA}"
+          gh release create "$TAG" \
+            --repo coco-staging/Coco-patient-mobile \
+            --title "AAB ${{ github.event.inputs.environment || 'production' }} $(date '+%Y-%m-%d')" \
+            --notes "$NOTES" \
+            app/android/app/build/outputs/bundle/release/*.aab
