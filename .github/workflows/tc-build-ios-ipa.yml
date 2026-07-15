@@ -16,21 +16,23 @@ on:
           - development
           - preview
           - production
-      export-method:
-        description: "Export method"
+      runner:
+        description: "Runner environment"
         required: true
-        default: "app-store"
+        default: "github-hosted"
         type: choice
         options:
-          - app-store
-          - enterprise
-          - ad-hoc
-          - development
+          - self-hosted
+          - github-hosted
+      xcode:
+        description: "Preferred Xcode version (must be >= 26.0 for Expo SDK 55)"
+        required: true
+        default: "26.6"
 
 jobs:
   build-ios:
     name: TC Build IPA (${{ github.event.inputs.environment || 'production' }})
-    runs-on: macos-latest
+    runs-on: ${{ github.event.inputs.runner == 'self-hosted' && fromJSON('["self-hosted","macOS"]') || fromJSON('["macos-latest"]') }}
     timeout-minutes: 90
 
     steps:
@@ -58,23 +60,79 @@ jobs:
           cache: "yarn"
           cache-dependency-path: app/yarn.lock
 
-      - name: Setup Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: "3.3"
-          bundler-cache: false
-
-      # ── 3.5. Select latest available Xcode ──────────────────────────────────
-      # Keep CI aligned with current toolchains used by Expo/RN dependencies.
-      - name: Select latest Xcode
+      # ── 3.5. Select compatible Xcode for Expo SDK 55 ─────────────────────
+      - name: Select Xcode >= 26
+        env:
+          REQUESTED_XCODE: ${{ github.event.inputs.xcode || '26.6' }}
         run: |
-          XCODE_APP=$(ls -1d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
-          if [ -z "$XCODE_APP" ]; then
-            echo "No Xcode*.app found" >&2
+          set -euo pipefail
+
+          ruby <<'RUBY'
+          requested = ENV.fetch("REQUESTED_XCODE")
+          min_major = 26
+
+          candidates = Dir.glob("/Applications/Xcode*.app").select { |p| File.directory?(p) }
+
+          parsed = candidates.filter_map do |app|
+            xb = File.join(app, "Contents/Developer/usr/bin/xcodebuild")
+            next unless File.executable?(xb)
+
+            version_line = `"#{xb}" -version 2>/dev/null`.lines.find { |l| l.start_with?("Xcode ") }
+            next unless version_line
+
+            version = version_line.split[1]
+            major = version.split(".").first.to_i
+            [app, version, major]
+          end
+
+          if parsed.empty?
+            abort("ERROR: no usable Xcode installations found under /Applications")
+          end
+
+          requested_match = parsed.find { |_app, version, _major| version == requested }
+
+          selected = if requested_match
+            requested_match
+          else
+            parsed
+              .select { |_app, _version, major| major >= min_major }
+              .max_by { |_app, version, _major| version.split('.').map(&:to_i) }
+          end
+
+          unless selected
+            installed = parsed.map { |_app, version, _major| version }.uniq.sort.join(", ")
+            abort("ERROR: Expo SDK 55 requires Xcode >= #{min_major}.0. Requested #{requested}. Installed: [#{installed}]. Use self-hosted runner with Xcode 26+.")
+          end
+
+          app, version, major = selected
+          if major < min_major
+            abort("ERROR: selected Xcode #{version} is below required #{min_major}.0")
+          end
+
+          File.open(ENV.fetch("GITHUB_ENV"), "a") do |f|
+            f.puts("SELECTED_XCODE_APP=#{app}")
+            f.puts("SELECTED_XCODE_VERSION=#{version}")
+            f.puts("DEVELOPER_DIR=#{app}/Contents/Developer")
+          end
+
+          puts("Selected Xcode #{version} at #{app}")
+          RUBY
+
+          SELECTED_XCODE_APP="${SELECTED_XCODE_APP:-}"
+          if [ -z "$SELECTED_XCODE_APP" ]; then
+            SELECTED_XCODE_APP="$(grep '^SELECTED_XCODE_APP=' "$GITHUB_ENV" | tail -n 1 | cut -d= -f2-)"
+          fi
+
+          if [ -z "$SELECTED_XCODE_APP" ]; then
+            echo "ERROR: failed to resolve SELECTED_XCODE_APP after Xcode selection" >&2
             exit 1
           fi
-          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
-          echo "Selected Xcode: $XCODE_APP"
+
+          if ! sudo xcode-select -s "$SELECTED_XCODE_APP/Contents/Developer"; then
+            xcode-select -s "$SELECTED_XCODE_APP/Contents/Developer"
+          fi
+
+          echo "Active Xcode:"
           xcodebuild -version
 
       # ── 4. Install dependencies ────────────────────────────────────────────
@@ -82,18 +140,50 @@ jobs:
         working-directory: app
         run: yarn install --frozen-lockfile
 
-      # ── 4.5. Compute fingerprint (before prebuild, matching EAS's own timing) ─
-      # EAS computes a build's fingerprint from source, before prebuild runs —
-      # ios/ and android/ don't exist yet at that point. Compute it here at the
-      # same point so `eas upload`'s --fingerprint matches what EAS itself
-      # would have computed, keeping runtime-version/OTA-update matching correct.
-      - name: Compute fingerprint
+      # ── 4.5. Persist RNFBApp non-modular include fix via patch-package ────
+      - name: Generate RNFBApp patch-package fix (managed EAS-safe)
         working-directory: app
         run: |
-          npx --yes @expo/fingerprint@0.16.7 fingerprint:generate --platform ios . > /tmp/fingerprint.json
-          FINGERPRINT_HASH=$(node -e "console.log(require('/tmp/fingerprint.json').hash)")
-          echo "→ Fingerprint: $FINGERPRINT_HASH"
-          echo "FINGERPRINT_HASH=$FINGERPRINT_HASH" >> "$GITHUB_ENV"
+          set -euo pipefail
+
+          mkdir -p patches
+          rm -f patches/@react-native-firebase+app+*.patch
+
+          ruby <<'RUBY'
+          podspec = "node_modules/@react-native-firebase/app/RNFBApp.podspec"
+          abort("ERROR: #{podspec} not found") unless File.exist?(podspec)
+
+          content = File.read(podspec)
+
+          # Skip if already patched in node_modules for this run.
+          if content.include?("CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES")
+            puts("RNFBApp.podspec already patched; continuing")
+            exit 0
+          end
+
+          replacement = <<~'REPL'.strip
+            "DEFINES_MODULE" => "YES",
+                "CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES" => "YES",
+                "OTHER_CFLAGS" => "$(inherited) -Wno-error=non-modular-include-in-framework-module",
+          REPL
+
+          unless content.sub!('"DEFINES_MODULE" => "YES",', replacement)
+            abort("ERROR: could not patch RNFBApp.podspec; DEFINES_MODULE stanza not found")
+          end
+
+          File.write(podspec, content)
+          puts("Patched #{podspec}")
+          RUBY
+
+          npx patch-package @react-native-firebase/app
+
+          PATCH_FILE="$(ls -1 patches/@react-native-firebase+app+*.patch 2>/dev/null | head -n 1 || true)"
+          if [ -z "$PATCH_FILE" ] || [ ! -f "$PATCH_FILE" ]; then
+            echo "ERROR: RNFB patch-package file was not generated" >&2
+            exit 1
+          fi
+
+          echo "Generated RNFB patch: $PATCH_FILE"
 
       # ── 5. Write .env file from secrets ────────────────────────────────────
       - name: Write .env file
@@ -135,189 +225,141 @@ jobs:
             echo "EXPO_PUBLIC_SOCKET_PIN_EXPIRES_AT=${ENV_SOCKET_PIN_EXPIRY}"
           } > .env
 
-      # ── 6. Import Apple distribution certificate (combined: app + NSE) ─────
-      - name: Import Apple Distribution Certificate
-        env:
-          CERT_BASE64: ${{ secrets.COCO_TC_IOS_DIST_CERT_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.COCO_TC_IOS_DIST_CERT_PASSWORD }}
+      # ── 6. Install EAS CLI ─────────────────────────────────────────────────
+      - name: Install EAS CLI
+        run: npm install -g eas-cli@16.18.1 --silent
+
+      # ── 7. Map workflow environment to EAS profile ────────────────────────
+      - name: Resolve EAS profile
+        id: eas_profile
         run: |
-          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
-          KEYCHAIN_PASSWORD="coco-tc-build-$(uuidgen)"
-
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-
-          echo "$CERT_BASE64" | tr -d '[:space:]' | base64 -d > /tmp/dist.p12
-          security import /tmp/dist.p12 -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          rm /tmp/dist.p12
-
-          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
-
-      # ── 7. Install provisioning profiles (app + NSE) ──────────────────────
-      - name: Install Provisioning Profiles
-        env:
-          APP_PROV_BASE64: ${{ secrets.COCO_TC_IOS_PROVISIONING_PROFILE_BASE64 }}
-          NSE_PROV_BASE64: ${{ secrets.COCO_TC_IOS_NSE_PROVISIONING_PROFILE_BASE64 }}
-        run: |
-          PROFILE_DIR=~/Library/MobileDevice/Provisioning\ Profiles
-          mkdir -p "$PROFILE_DIR"
-
-          # Install app profile with UUID name
-          echo "$APP_PROV_BASE64" | tr -d '[:space:]' | base64 -d > /tmp/app.mobileprovision
-          APP_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< "$(security cms -D -i /tmp/app.mobileprovision)")
-          cp /tmp/app.mobileprovision "$PROFILE_DIR/$APP_UUID.mobileprovision"
-          echo "App profile UUID: $APP_UUID"
-          echo "APP_PROFILE_UUID=$APP_UUID" >> $GITHUB_ENV
-
-          # Install NSE profile with UUID name
-          echo "$NSE_PROV_BASE64" | tr -d '[:space:]' | base64 -d > /tmp/nse.mobileprovision
-          NSE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< "$(security cms -D -i /tmp/nse.mobileprovision)")
-          cp /tmp/nse.mobileprovision "$PROFILE_DIR/$NSE_UUID.mobileprovision"
-          echo "NSE profile UUID: $NSE_UUID"
-          echo "NSE_PROFILE_UUID=$NSE_UUID" >> $GITHUB_ENV
-
-      # ── 8. Generate native iOS project ──────────────────────────────────────
-      - name: Run expo prebuild
-        working-directory: app
-        run: npx expo prebuild --platform ios --clean
-
-      # ── 9. Install CocoaPods ────────────────────────────────────────────────
-      - name: Install CocoaPods
-        working-directory: app/ios
-        run: pod install
-
-      # ── 10. Inject manual signing settings into pbxproj ────────────────────
-      - name: Install xcodeproj gem
-        run: gem install xcodeproj --no-document
-
-      - name: Configure manual signing in pbxproj
-        working-directory: app/ios
-        # APP_PROFILE_UUID / NSE_PROFILE_UUID were written via $GITHUB_ENV in
-        # "Install Provisioning Profiles" above — they're already real
-        # process env vars for every later step in this job, so no explicit
-        # env: passthrough (and no ${{ env.* }} expression) is needed here;
-        # Ruby's ENV[] reads them directly.
-        run: |
-          ruby -e '
-            require "xcodeproj"
-
-            project_path = Dir.glob("*.xcodeproj").first
-            project = Xcodeproj::Project.open(project_path)
-
-            team_id = "Z8778PLB65"
-            app_uuid = ENV["APP_PROFILE_UUID"]
-            nse_uuid = ENV["NSE_PROFILE_UUID"]
-
-            project.targets.each do |target|
-              target.build_configurations.each do |config|
-                config.build_settings["CODE_SIGN_STYLE"] = "Manual"
-                config.build_settings["DEVELOPMENT_TEAM"] = team_id
-                config.build_settings["CODE_SIGN_IDENTITY"] = "Apple Distribution"
-
-                if target.name == "CocoPracticeDev" || target.name == "coco-mobile"
-                  config.build_settings["PROVISIONING_PROFILE_SPECIFIER"] = app_uuid
-                elsif target.name == "NotifyKitNSE"
-                  config.build_settings["PROVISIONING_PROFILE_SPECIFIER"] = nse_uuid
-                end
-              end
-            end
-
-            project.save
-            puts "Updated signing settings for #{project.targets.map(&:name).join(", ")}"
-          '
-
-      # ── 11. Determine scheme and app name ───────────────────────────────────
-      - name: Resolve scheme
-        working-directory: app
-        id: scheme
-        run: |
-          SCHEME=$(xcodebuild -list -project ios/*.xcodeproj 2>/dev/null | grep -A1 "Schemes:" | tail -1 | xargs || \
-                  xcodebuild -list -workspace ios/*.xcworkspace 2>/dev/null | grep -A1 "Schemes:" | tail -1 | xargs)
-          echo "SCHEME=$SCHEME" >> $GITHUB_OUTPUT
-          echo "Resolved scheme: $SCHEME"
-
-      # ── 12. Resolve bundle IDs from app.config.ts ──────────────────────────
-      - name: Resolve bundle IDs
-        working-directory: app
-        id: bundles
-        run: |
-          ENV="${{ github.event.inputs.environment || 'production' }}"
-          case "$ENV" in
+          set -euo pipefail
+          ENV_NAME="${{ github.event.inputs.environment || 'production' }}"
+          case "$ENV_NAME" in
             development)
-              APP_BUNDLE="com.cocointel.practice.dev"
+              PROFILE="development"
               ;;
             preview)
-              APP_BUNDLE="com.cocointel.practice.preview"
+              PROFILE="preview"
               ;;
             production|*)
-              APP_BUNDLE="com.cocointel.practice"
+              PROFILE="production"
               ;;
           esac
-          NSE_BUNDLE="${APP_BUNDLE}.NotifyKitNSE"
-          echo "APP_BUNDLE=$APP_BUNDLE" >> $GITHUB_OUTPUT
-          echo "NSE_BUNDLE=$NSE_BUNDLE" >> $GITHUB_OUTPUT
-          echo "App bundle: $APP_BUNDLE"
-          echo "NSE bundle: $NSE_BUNDLE"
+          echo "PROFILE=$PROFILE" >> "$GITHUB_OUTPUT"
+          echo "Using EAS profile: $PROFILE"
 
-      # ── 13. Archive ─────────────────────────────────────────────────────────
-      - name: Archive
+      # ── 7.5. Generate iOS project and patch Podfile for Xcode 26+ ─────────
+      - name: Run expo prebuild (iOS)
+        working-directory: app
+        env:
+          DEVELOPER_DIR: ${{ env.DEVELOPER_DIR }}
+        run: npx expo prebuild --platform ios --clean --non-interactive
+
+      - name: Patch Podfile to allow non-modular includes in Pods
         working-directory: app/ios
+        env:
+          DEVELOPER_DIR: ${{ env.DEVELOPER_DIR }}
         run: |
-          xcodebuild archive \
-            -workspace *.xcworkspace \
-            -scheme '${{ steps.scheme.outputs.SCHEME }}' \
-            -configuration Release \
-            -archivePath "$RUNNER_TEMP/coco-tc.xcarchive" \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="Apple Distribution" \
-            DEVELOPMENT_TEAM=Z8778PLB65 \
-            ONLY_ACTIVE_ARCH=NO
+          set -euo pipefail
+          ruby <<'RUBY'
+          podfile = "Podfile"
+          content = File.read(podfile)
+          marker_start = "# BEGIN CI_RNFB_NON_MODULAR_HEADERS"
+          marker_end = "# END CI_RNFB_NON_MODULAR_HEADERS"
 
-      # ── 14. Export IPA ──────────────────────────────────────────────────────
-      - name: Export IPA
+          if content.include?(marker_start)
+            puts("Podfile already contains CI RNFB non-modular settings; skipping")
+            exit 0
+          end
+
+          anchor_re = /^(\s*post_install do \|installer\|\n)/
+          unless content.match?(anchor_re)
+            abort("ERROR: post_install block not found in ios/Podfile")
+          end
+
+          insertion = <<~'RUBY_SNIPPET'
+              #{marker_start}
+              installer.pods_project.targets.each do |target|
+                target.build_configurations.each do |config|
+                  config.build_settings['CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES'] = 'YES'
+
+                  flags = config.build_settings['OTHER_CFLAGS'] || ['$(inherited)']
+                  flags = [flags] if flags.is_a?(String)
+                  unless flags.include?('-Wno-error=non-modular-include-in-framework-module')
+                    flags << '-Wno-error=non-modular-include-in-framework-module'
+                  end
+                  config.build_settings['OTHER_CFLAGS'] = flags
+                end
+              end
+              #{marker_end}
+
+          RUBY_SNIPPET
+
+          content.sub!(anchor_re) { |match| "#{match}#{insertion}" }
+          File.write(podfile, content)
+          puts("Patched ios/Podfile post_install with deterministic RNFB non-modular include settings")
+          RUBY
+
+      - name: Install CocoaPods dependencies
+        working-directory: app/ios
+        env:
+          DEVELOPER_DIR: ${{ env.DEVELOPER_DIR }}
         run: |
-          EXPORT_METHOD="${{ github.event.inputs.export-method || 'app-store' }}"
-          cat > /tmp/export.plist << EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key>
-            <string>${EXPORT_METHOD}</string>
-            <key>teamID</key>
-            <string>Z8778PLB65</string>
-            <key>compileBitcode</key>
-            <false/>
-            <key>uploadSymbols</key>
-            <true/>
-            <key>signingStyle</key>
-            <string>manual</string>
-            <key>provisioningProfiles</key>
-            <dict>
-              <key>${{ steps.bundles.outputs.APP_BUNDLE }}</key>
-              <string>${APP_PROFILE_UUID}</string>
-              <key>${{ steps.bundles.outputs.NSE_BUNDLE }}</key>
-              <string>${NSE_PROFILE_UUID}</string>
-            </dict>
-          </dict>
-          </plist>
-          EOF
+          set -euo pipefail
+          pod deintegrate
+          pod install --repo-update
 
-          xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/coco-tc.xcarchive" \
-            -exportPath "$RUNNER_TEMP/ipa" \
-            -exportOptionsPlist /tmp/export.plist
+      - name: Clean Xcode DerivedData
+        env:
+          DEVELOPER_DIR: ${{ env.DEVELOPER_DIR }}
+        run: |
+          set -euo pipefail
+          rm -rf ~/Library/Developer/Xcode/DerivedData/*
 
-      # ── 15. Get source commit SHA ──────────────────────────────────────────
+      # ── 8. Build iOS IPA via local runner (no EAS cloud build) ────────────
+      - name: Build iOS IPA with EAS local
+        working-directory: app
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EAS_LOCAL_BUILD_SKIP_CLEANUP: 1
+          DEVELOPER_DIR: ${{ env.DEVELOPER_DIR }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${EXPO_TOKEN:-}" ]; then
+            echo "ERROR: EXPO_TOKEN secret is required for EAS local build." >&2
+            exit 1
+          fi
+
+          mkdir -p "${{ runner.temp }}/ipa"
+          IPA_PATH="${{ runner.temp }}/ipa/coco-tc-${{ steps.eas_profile.outputs.PROFILE }}.ipa"
+
+          echo "Using DEVELOPER_DIR=${DEVELOPER_DIR:-<unset>}"
+          echo "xcode-select path: $(xcode-select -p)"
+          xcodebuild -version
+
+          eas build \
+            --platform ios \
+            --profile "${{ steps.eas_profile.outputs.PROFILE }}" \
+            --local \
+            --non-interactive \
+            --output "$IPA_PATH"
+
+          if [ ! -f "$IPA_PATH" ]; then
+            echo "ERROR: EAS local build finished without producing IPA at $IPA_PATH" >&2
+            exit 1
+          fi
+
+          echo "IPA_PATH=$IPA_PATH" >> "$GITHUB_ENV"
+          echo "Built IPA: $IPA_PATH"
+
+      # ── 16. Get source commit SHA ──────────────────────────────────────────
       - name: Get source commit SHA
         working-directory: app
         run: echo "SOURCE_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
 
-      # ── 16. Create tag + GitHub Release ────────────────────────────────────
+      # ── 17. Create tag + GitHub Release ────────────────────────────────────
       - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.COCO_PAT }}
@@ -325,34 +367,11 @@ jobs:
           TAG="tc-build-ipa-${{ github.event.inputs.environment || 'production' }}-$(date +%Y%m%d)-${SOURCE_SHA:0:7}"
           NOTES="Branch: ${{ github.event.inputs.branch }}
           Environment: ${{ github.event.inputs.environment || 'production' }}
-          Export method: ${{ github.event.inputs.export-method || 'app-store' }}
+          Build flow: EAS local
+          EAS profile: ${{ steps.eas_profile.outputs.PROFILE }}
           Commit: ${SOURCE_SHA}"
           gh release create "$TAG" \
             --repo coco-staging/coco-mobile \
             --title "TC IPA ${{ github.event.inputs.environment || 'production' }} $(date '+%Y-%m-%d')" \
             --notes "$NOTES" \
-            ${{ runner.temp }}/ipa/*.ipa
-
-      # ── 17. Push the build to EAS (Uploaded builds quota) ──────────────────
-      # Registers this externally-built IPA with EAS so it shows up in the
-      # dashboard / is eligible for `eas submit`, even though it wasn't built
-      # by EAS Build itself. Needs an EXPO_TOKEN secret (an EAS robot-user
-      # access token — Project settings → Access tokens → Robot users).
-      - name: Install eas-cli
-        run: npm install -g eas-cli@latest --silent
-
-      - name: Upload to EAS
-        working-directory: app
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: |
-          if [ -z "$EXPO_TOKEN" ]; then
-            echo "ERROR: EXPO_TOKEN secret not set — add the EAS robot-user access token as a repo secret named EXPO_TOKEN." >&2
-            exit 1
-          fi
-          IPA_PATH=$(find "${{ runner.temp }}/ipa" -iname '*.ipa' | head -1)
-          if [ -z "$IPA_PATH" ]; then
-            echo "ERROR: no .ipa found to upload" >&2
-            exit 1
-          fi
-          eas upload --platform ios --build-path "$IPA_PATH" --fingerprint "$FINGERPRINT_HASH" --non-interactive --json
+            "${IPA_PATH}"
