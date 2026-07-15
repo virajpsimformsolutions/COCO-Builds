@@ -9,9 +9,14 @@ COCO-Builds is a centralized GitHub Actions CI/CD system for building Android an
 ```
 virajpsimformsolutions/COCO-Builds (this repo)
 ├── .github/workflows/
-│   ├── build-android-apk.yml    ← APK workflow (dev/testing)
-│   ├── build-android-aab.yml    ← AAB workflow (Play Store)
-│   └── build-ios-ipa.yml        ← IPA workflow (App Store)
+│   ├── build-android-apk.yml       ← Patient: APK workflow (dev/testing)
+│   ├── build-android-aab.yml       ← Patient: AAB workflow (Play Store)
+│   ├── build-android-metro.yml     ← Patient: dev-client APK (Metro backup)
+│   ├── build-ios-metro.yml         ← Patient: dev-client iOS (Metro backup, sim or device)
+│   ├── tc-build-android-apk.yml    ← TC: APK workflow (dev/testing)
+│   ├── tc-build-android-aab.yml    ← TC: AAB workflow (Play Store)
+│   ├── tc-build-android-metro.yml  ← TC: dev-client APK (Metro backup)
+│   └── tc-build-ios-metro.yml      ← TC: dev-client iOS (Metro backup, sim or device)
 └── README.md
 
 coco-staging/Coco-patient-mobile (source repo)
@@ -120,6 +125,81 @@ coco-staging/Coco-patient-mobile (source repo)
 12. **Create tag + Release** — Tag pattern: `build-ipa-<env>-<date>-<sha>` → `coco-staging/Coco-patient-mobile`
 
 **Output:** `.ipa` file attached to GitHub Release on source repo
+
+> **Status:** this workflow (and `tc-build-ios-ipa.yml`) existed and worked, but
+> was removed from `main` on 2026-07-15 ("fix: ios workflow delete for temp").
+> `build-ios-metro.yml` / `tc-build-ios-metro.yml` (below) reuse its proven
+> signing/archive/export steps for the `target: device` path, so restoring a
+> full App Store IPA workflow later is mostly a matter of copying that logic
+> back with `export-method` re-exposed as an input.
+
+---
+
+### 4. Build Android Metro / Dev Client (`build-android-metro.yml`, `tc-build-android-metro.yml`)
+
+**Trigger:** Manual (`workflow_dispatch`)
+
+**Why it exists:** backup path for the free EAS account's build quota/concurrency
+limit — produces the same kind of dev-client APK as each source repo's own
+`.github/workflows/build-dev.yml` `android-metro-dev` job, but on a full
+GitHub-hosted runner instead of EAS Build.
+
+**Inputs:** same as the APK workflow (`branch`, `environment`, default `development`).
+
+**Pipeline:** identical to `build-android-apk.yml` / `tc-build-android-apk.yml`
+(same secrets, same DocuSign/JVM/metaspace patches for the patient app), just
+retitled and tagged `build-metro-...` / `tc-build-metro-...` so it's clear the
+artifact is meant for Metro/dev-client testing rather than QA distribution.
+
+**Output artifact:** `.apk` file attached to GitHub Release on source repo
+
+---
+
+### 5. Build iOS Metro / Dev Client (`build-ios-metro.yml`, `tc-build-ios-metro.yml`)
+
+**Trigger:** Manual (`workflow_dispatch`)
+
+**Why it exists:** same backup rationale as the Android metro workflow above.
+The `target: device` path reuses the exact signing/archive/export steps from
+the removed `build-ios-ipa.yml` / `tc-build-ios-ipa.yml` (macos-15 + Xcode
+16.4 pin included — see the note above about `macos-latest` moving to Xcode
+26 and breaking react-native-firebase macro visibility).
+
+**Inputs:**
+| Input | Default | Options |
+|-------|---------|---------|
+| `branch` | `develop` | Any branch |
+| `environment` | `development` | `development`, `preview`, `production` |
+| `target` | `simulator` | `simulator`, `device` |
+
+**Runner:** `macos-15` (Xcode pinned to 16.4) | **Timeout:** 75 minutes
+
+**Pipeline Steps:**
+
+1. **Checkout** — Both repos
+2. **Setup Node.js** + Yarn cache, **Setup Ruby** 3.3, **Select Xcode 16.4**
+3. **Cache CocoaPods** — `~/Library/Caches/CocoaPods`, `~/.cocoapods`
+4. **Install dependencies** — `yarn install --frozen-lockfile`
+5. **Write .env** — Same secrets as the Android workflows for that app
+6. **`target: device` only** — import distribution cert into a temp keychain; install provisioning profile(s) (TC installs both the app profile and the `NotifyKitNSE` extension profile, since coco-mobile ships a notification-service-extension target)
+7. **expo prebuild** + **pod install** — Generates the native iOS project
+8. **TC, `target: device` only** — patches `project.pbxproj` via the `xcodeproj` gem to set manual signing + the correct provisioning profile per target (main app vs. `NotifyKitNSE`), since `xcodebuild` CLI flags can only apply one profile to the whole scheme
+9. **Resolve scheme** — `xcodebuild -list`
+10. **`target: simulator`** (default, no secrets needed) — `xcodebuild build -sdk iphonesimulator ... CODE_SIGNING_ALLOWED=NO`, zips the resulting `.app`
+11. **`target: device`** — `xcodebuild archive` with manual signing (`DEVELOPMENT_TEAM=Z8778PLB65`), then `-exportArchive` with `method: development` to produce a `.ipa`. Fails fast with a clear error if the required secrets aren't set yet.
+12. **Create tag + Release** — Tag pattern: `build-ios-metro-<target>-<env>-<date>-<sha>` (`tc-...` for coco-mobile)
+
+**Output:** `.zip` (simulator `.app`) or `.ipa` (device) attached to GitHub Release on source repo
+
+**Additional secrets needed for `target: device`** (not required for `target: simulator`) — same ones the removed IPA workflows used:
+
+| App | Secrets |
+|-----|---------|
+| Patient | `IOS_DIST_CERT_BASE64`, `IOS_DIST_CERT_PASSWORD`, `IOS_PROVISIONING_PROFILE_BASE64` |
+| TC | `COCO_TC_IOS_DIST_CERT_BASE64`, `COCO_TC_IOS_DIST_CERT_PASSWORD`, `COCO_TC_IOS_PROVISIONING_PROFILE_BASE64`, `COCO_TC_IOS_NSE_PROVISIONING_PROFILE_BASE64` |
+
+See "How to prepare iOS secrets" below for how to export these. Until they're
+added, run with `target: simulator` — it needs none of them.
 
 ---
 

@@ -1,4 +1,9 @@
-name: "[TC] Build Android AAB (Release)"
+name: "[TC] Build Android Metro (Dev Client)"
+
+# Backup path for when the EAS free-tier quota/concurrency is exhausted.
+# Produces the same kind of dev-client APK as coco-mobile's own
+# .github/workflows/build-dev.yml "android-metro-dev" job, just running here
+# against a full GitHub-hosted runner instead of EAS Build.
 
 on:
   workflow_dispatch:
@@ -10,7 +15,7 @@ on:
       environment:
         description: 'Build environment'
         required: true
-        default: 'production'
+        default: 'development'
         type: choice
         options:
           - development
@@ -19,9 +24,9 @@ on:
 
 jobs:
   build-android:
-    name: TC Build AAB (${{ github.event.inputs.environment || 'production' }})
+    name: TC Build Android Metro APK (${{ github.event.inputs.environment || 'development' }})
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
 
     steps:
       # ── 1. Checkout COCO-Builds (workflow repo) ────────────────────────────
@@ -70,25 +75,12 @@ jobs:
         working-directory: app
         run: yarn install --frozen-lockfile
 
-      # ── 5.5. Compute fingerprint (before prebuild, matching EAS's own timing) ─
-      # EAS computes a build's fingerprint from source, before prebuild runs —
-      # ios/ and android/ don't exist yet at that point. Compute it here at the
-      # same point so `eas upload`'s --fingerprint matches what EAS itself
-      # would have computed, keeping runtime-version/OTA-update matching correct.
-      - name: Compute fingerprint
-        working-directory: app
-        run: |
-          npx --yes @expo/fingerprint@0.16.7 . --platform android > /tmp/fingerprint.json
-          FINGERPRINT_HASH=$(node -e "console.log(require('/tmp/fingerprint.json').hash)")
-          echo "→ Fingerprint: $FINGERPRINT_HASH"
-          echo "FINGERPRINT_HASH=$FINGERPRINT_HASH" >> "$GITHUB_ENV"
-
       # ── 6. Write .env file from secrets ────────────────────────────────────
       - name: Write .env file
         working-directory: app
         env:
           ENV_API_URL: ${{ secrets.COCO_TC_API_URL }}
-          ENV_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
+          ENV_ENVIRONMENT: ${{ github.event.inputs.environment || 'development' }}
           ENV_SENTRY_URL: ${{ secrets.COCO_TC_SENTRY_URL }}
           ENV_SENTRY_DSN: ${{ secrets.COCO_TC_SENTRY_DSN }}
           ENV_SENTRY_PROJECT: ${{ secrets.COCO_TC_SENTRY_PROJECT }}
@@ -179,10 +171,13 @@ jobs:
         run: |
           sed -i 's/org\.gradle\.jvmargs=-Xmx[0-9]*m -XX:MaxMetaspaceSize=[0-9]*m/org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m/' android/gradle.properties
 
-      # ── 12. Build release AAB (all archs for Play Store) ──────────────────
-      - name: Build AAB
+      # ── 12. Build dev-client APK (arm64 only for speed) ────────────────────
+      # Same shape as coco-mobile's own "android-metro-dev" GH Actions job —
+      # a release-configured build with expo-dev-client so it can load from
+      # the Metro bundler for fast local JS iteration.
+      - name: Build APK
         working-directory: app/android
-        run: ./gradlew bundleRelease --parallel --build-cache -x lint
+        run: ./gradlew assembleRelease --parallel --build-cache -PreactNativeArchitectures=arm64-v8a -x lint
 
       # ── 13. Get source commit SHA ──────────────────────────────────────────
       - name: Get source commit SHA
@@ -194,36 +189,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.COCO_PAT }}
         run: |
-          TAG="tc-build-aab-${{ github.event.inputs.environment || 'production' }}-$(date +%Y%m%d)-${SOURCE_SHA:0:7}"
+          TAG="tc-build-metro-${{ github.event.inputs.environment || 'development' }}-$(date +%Y%m%d)-${SOURCE_SHA:0:7}"
           NOTES="Branch: ${{ github.event.inputs.branch }}
-          Environment: ${{ github.event.inputs.environment || 'production' }}
+          Environment: ${{ github.event.inputs.environment || 'development' }}
           Commit: ${SOURCE_SHA}"
           gh release create "$TAG" \
             --repo coco-staging/coco-mobile \
-            --title "TC AAB ${{ github.event.inputs.environment || 'production' }} $(date '+%Y-%m-%d')" \
+            --title "TC Metro APK ${{ github.event.inputs.environment || 'development' }} $(date '+%Y-%m-%d')" \
             --notes "$NOTES" \
-            app/android/app/build/outputs/bundle/release/*.aab
-
-      # ── 15. Push the build to EAS (Uploaded builds quota) ──────────────────
-      # Registers this externally-built AAB with EAS so it shows up in the
-      # dashboard / is eligible for `eas submit`, even though it wasn't built
-      # by EAS Build itself. Needs an EXPO_TOKEN secret (an EAS robot-user
-      # access token — Project settings → Access tokens → Robot users).
-      - name: Install eas-cli
-        run: npm install -g eas-cli@latest --silent
-
-      - name: Upload to EAS
-        working-directory: app
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: |
-          if [ -z "$EXPO_TOKEN" ]; then
-            echo "ERROR: EXPO_TOKEN secret not set — add the EAS robot-user access token as a repo secret named EXPO_TOKEN." >&2
-            exit 1
-          fi
-          AAB_PATH=$(find android/app/build/outputs/bundle/release -iname '*.aab' | head -1)
-          if [ -z "$AAB_PATH" ]; then
-            echo "ERROR: no .aab found to upload" >&2
-            exit 1
-          fi
-          eas upload --platform android --build-path "$AAB_PATH" --fingerprint "$FINGERPRINT_HASH" --non-interactive --json
+            app/android/app/build/outputs/apk/release/*.apk

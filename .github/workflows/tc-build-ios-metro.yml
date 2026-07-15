@@ -1,0 +1,399 @@
+name: "[TC] Build iOS Metro (Dev Client)"
+
+# Backup path for when the EAS free-tier quota/concurrency is exhausted.
+# `target: simulator` needs no signing at all and works with zero extra
+# secrets. `target: device` needs COCO_TC_IOS_DIST_CERT_BASE64 /
+# COCO_TC_IOS_DIST_CERT_PASSWORD / COCO_TC_IOS_PROVISIONING_PROFILE_BASE64 /
+# COCO_TC_IOS_NSE_PROVISIONING_PROFILE_BASE64 (coco-mobile ships a
+# NotifyKitNSE notification-service-extension target, which needs its own
+# profile) — same secrets the now-removed tc-build-ios-ipa.yml used. The job
+# fails fast with a clear message if they're missing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build (e.g. develop, main, feat/xyz)'
+        required: true
+        default: 'develop'
+      environment:
+        description: 'Build environment'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+          - development
+          - preview
+          - production
+      target:
+        description: 'Build target'
+        required: true
+        default: 'simulator'
+        type: choice
+        options:
+          - simulator
+          - device
+
+jobs:
+  build-ios:
+    name: TC Build iOS Metro (${{ github.event.inputs.target || 'simulator' }}, ${{ github.event.inputs.environment || 'development' }})
+    runs-on: macos-15
+    timeout-minutes: 75
+
+    steps:
+      # ── 1. Checkout COCO-Builds (workflow repo) ────────────────────────────
+      - name: Checkout COCO-Builds
+        uses: actions/checkout@v4
+        with:
+          repository: virajpsimformsolutions/COCO-Builds
+          token: ${{ secrets.COCO_PAT }}
+
+      # ── 2. Checkout coco-mobile source ─────────────────────────────────────
+      - name: Checkout coco-mobile
+        uses: actions/checkout@v4
+        with:
+          repository: coco-staging/coco-mobile
+          ref: ${{ github.event.inputs.branch }}
+          path: app
+          token: ${{ secrets.COCO_PAT }}
+
+      # ── 3. Setup tools ──────────────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.4'
+          cache: 'yarn'
+          cache-dependency-path: app/yarn.lock
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: false
+
+      # ── 3.5. Pin Xcode version ──────────────────────────────────────────────
+      # macos-15 defaults to Xcode 16.4, but pin explicitly in case GitHub
+      # changes the image default. Newer Xcode (26.x, what "macos-latest"
+      # resolves to as of writing) enables Explicit Modules by default, which
+      # breaks RCT_EXPORT_MODULE/RCT_EXPORT_METHOD macro visibility in
+      # react-native-firebase's RNFBMessaging — same failure the (now removed)
+      # tc-build-ios-ipa.yml hit and fixed by pinning macos-15 + Xcode 16.4.
+      - name: Select Xcode 16.4
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.4.app 2>/dev/null || \
+          { echo "Xcode 16.4 not found. Available versions:"; ls /Applications/Xcode*.app 2>/dev/null || echo "No Xcode*.app found"; echo "Current: $(xcode-select -p)"; exit 1; }
+          xcodebuild -version
+
+      # ── 4. Cache CocoaPods ──────────────────────────────────────────────────
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+            ~/.cocoapods
+          key: ${{ runner.os }}-pods-${{ hashFiles('app/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
+
+      # ── 5. Install dependencies ─────────────────────────────────────────────
+      - name: Install dependencies
+        working-directory: app
+        run: yarn install --frozen-lockfile
+
+      # ── 6. Write .env file from secrets ─────────────────────────────────────
+      - name: Write .env file
+        working-directory: app
+        env:
+          ENV_API_URL: ${{ secrets.COCO_TC_API_URL }}
+          ENV_ENVIRONMENT: ${{ github.event.inputs.environment || 'development' }}
+          ENV_SENTRY_URL: ${{ secrets.COCO_TC_SENTRY_URL }}
+          ENV_SENTRY_DSN: ${{ secrets.COCO_TC_SENTRY_DSN }}
+          ENV_SENTRY_PROJECT: ${{ secrets.COCO_TC_SENTRY_PROJECT }}
+          ENV_SENTRY_ORG: ${{ secrets.COCO_TC_SENTRY_ORG }}
+          ENV_SENTRY_TOKEN: ${{ secrets.COCO_TC_SENTRY_TOKEN }}
+          ENV_AZURE_CLIENT_ID: ${{ secrets.COCO_TC_AZURE_CLIENT_ID }}
+          ENV_AZURE_TENANT_ID: ${{ secrets.COCO_TC_AZURE_TENANT_ID }}
+          ENV_AZURE_REDIRECT_URI: ${{ secrets.COCO_TC_AZURE_REDIRECT_URI }}
+          ENV_STORAGE_ENCRYPTION_KEY: ${{ secrets.COCO_TC_STORAGE_ENCRYPTION_KEY }}
+          ENV_SOCKET_URL: ${{ secrets.COCO_TC_SOCKET_URL }}
+          ENV_API_PIN: ${{ secrets.COCO_TC_API_PIN_SHA256 }}
+          ENV_SOCKET_PIN: ${{ secrets.COCO_TC_SOCKET_PIN_SHA256 }}
+          ENV_API_PIN_EXPIRY: ${{ secrets.COCO_TC_API_PIN_EXPIRES_AT }}
+          ENV_SOCKET_PIN_EXPIRY: ${{ secrets.COCO_TC_SOCKET_PIN_EXPIRES_AT }}
+        run: |
+          {
+            echo "EXPO_PUBLIC_API_URL=${ENV_API_URL}"
+            echo "EXPO_PUBLIC_ENVIRONMENT=${ENV_ENVIRONMENT}"
+            echo "EXPO_PUBLIC_SENTRY_URL=${ENV_SENTRY_URL}"
+            echo "EXPO_SENTRY_URL=${ENV_SENTRY_DSN}"
+            echo "EXPO_SENTRY_PROJECT_NAME=${ENV_SENTRY_PROJECT}"
+            echo "EXPO_SENTRY_ORGANIZATION=${ENV_SENTRY_ORG}"
+            echo "SENTRY_AUTH_TOKEN=${ENV_SENTRY_TOKEN}"
+            echo "EXPO_PUBLIC_AZURE_CLIENT_ID=${ENV_AZURE_CLIENT_ID}"
+            echo "EXPO_PUBLIC_AZURE_TENANT_ID=${ENV_AZURE_TENANT_ID}"
+            echo "EXPO_PUBLIC_AZURE_REDIRECT_URI=${ENV_AZURE_REDIRECT_URI}"
+            echo "EXPO_PUBLIC_STORAGE_ENCRYPTION_KEY=${ENV_STORAGE_ENCRYPTION_KEY}"
+            echo "EXPO_PUBLIC_SOCKET_URL=${ENV_SOCKET_URL}"
+            echo "EXPO_PUBLIC_API_PIN_SHA256=${ENV_API_PIN}"
+            echo "EXPO_PUBLIC_SOCKET_PIN_SHA256=${ENV_SOCKET_PIN}"
+            echo "EXPO_PUBLIC_API_PIN_EXPIRES_AT=${ENV_API_PIN_EXPIRY}"
+            echo "EXPO_PUBLIC_SOCKET_PIN_EXPIRES_AT=${ENV_SOCKET_PIN_EXPIRY}"
+          } > .env
+
+      # ── 7a. Device target — import cert + provisioning profiles first ──────
+      - name: Import Apple Distribution Certificate
+        if: ${{ github.event.inputs.target == 'device' }}
+        env:
+          CERT_BASE64: ${{ secrets.COCO_TC_IOS_DIST_CERT_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.COCO_TC_IOS_DIST_CERT_PASSWORD }}
+        run: |
+          if [ -z "$CERT_BASE64" ] || [ -z "$CERT_PASSWORD" ]; then
+            echo "ERROR: COCO_TC_IOS_DIST_CERT_BASE64 / COCO_TC_IOS_DIST_CERT_PASSWORD secrets are not set." >&2
+            echo "Add them (see COCO-BUILD-DOCUMENTATION.md) before running a device build, or use target: simulator." >&2
+            exit 1
+          fi
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PASSWORD="coco-tc-build-$(uuidgen)"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          echo "$CERT_BASE64" | tr -d '[:space:]' | base64 -d > /tmp/dist.p12
+          security import /tmp/dist.p12 -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          rm /tmp/dist.p12
+
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+
+      - name: Install Provisioning Profiles (app + NSE)
+        if: ${{ github.event.inputs.target == 'device' }}
+        env:
+          APP_PROV_BASE64: ${{ secrets.COCO_TC_IOS_PROVISIONING_PROFILE_BASE64 }}
+          NSE_PROV_BASE64: ${{ secrets.COCO_TC_IOS_NSE_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          if [ -z "$APP_PROV_BASE64" ] || [ -z "$NSE_PROV_BASE64" ]; then
+            echo "ERROR: COCO_TC_IOS_PROVISIONING_PROFILE_BASE64 / COCO_TC_IOS_NSE_PROVISIONING_PROFILE_BASE64 secrets are not set." >&2
+            echo "Add them (see COCO-BUILD-DOCUMENTATION.md) before running a device build, or use target: simulator." >&2
+            exit 1
+          fi
+          PROFILE_DIR=~/Library/MobileDevice/Provisioning\ Profiles
+          mkdir -p "$PROFILE_DIR"
+
+          echo "$APP_PROV_BASE64" | tr -d '[:space:]' | base64 -d > /tmp/app.mobileprovision
+          APP_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< "$(security cms -D -i /tmp/app.mobileprovision)")
+          cp /tmp/app.mobileprovision "$PROFILE_DIR/$APP_UUID.mobileprovision"
+          echo "App profile UUID: $APP_UUID"
+          echo "APP_PROFILE_UUID=$APP_UUID" >> $GITHUB_ENV
+
+          echo "$NSE_PROV_BASE64" | tr -d '[:space:]' | base64 -d > /tmp/nse.mobileprovision
+          NSE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< "$(security cms -D -i /tmp/nse.mobileprovision)")
+          cp /tmp/nse.mobileprovision "$PROFILE_DIR/$NSE_UUID.mobileprovision"
+          echo "NSE profile UUID: $NSE_UUID"
+          echo "NSE_PROFILE_UUID=$NSE_UUID" >> $GITHUB_ENV
+
+      # ── 8. Generate native iOS project ──────────────────────────────────────
+      - name: Run expo prebuild
+        working-directory: app
+        run: npx expo prebuild --platform ios --clean
+
+      # ── 9. Install CocoaPods ────────────────────────────────────────────────
+      - name: Install CocoaPods
+        working-directory: app/ios
+        run: pod install
+
+      # ── 10. Inject manual signing settings into pbxproj (device only) ──────
+      # coco-mobile has two targets (main app + NotifyKitNSE extension) that
+      # each need their own provisioning profile — xcodebuild's CLI flags only
+      # apply one profile to the whole scheme, so this patches the project
+      # file directly, same as the now-removed tc-build-ios-ipa.yml did.
+      - name: Install xcodeproj gem
+        if: ${{ github.event.inputs.target == 'device' }}
+        run: gem install xcodeproj --no-document
+
+      - name: Configure manual signing in pbxproj
+        if: ${{ github.event.inputs.target == 'device' }}
+        working-directory: app/ios
+        # APP_PROFILE_UUID / NSE_PROFILE_UUID were written via $GITHUB_ENV in
+        # "Install Provisioning Profiles (app + NSE)" above — they're already
+        # real process env vars for every later step in this job, so no
+        # explicit env: passthrough (and no ${{ env.* }} expression) is
+        # needed here; Ruby's ENV[] reads them directly.
+        run: |
+          ruby -e '
+            require "xcodeproj"
+
+            project_path = Dir.glob("*.xcodeproj").first
+            project = Xcodeproj::Project.open(project_path)
+
+            team_id = "Z8778PLB65"
+            app_uuid = ENV["APP_PROFILE_UUID"]
+            nse_uuid = ENV["NSE_PROFILE_UUID"]
+
+            project.targets.each do |target|
+              target.build_configurations.each do |config|
+                config.build_settings["CODE_SIGN_STYLE"] = "Manual"
+                config.build_settings["DEVELOPMENT_TEAM"] = team_id
+                config.build_settings["CODE_SIGN_IDENTITY"] = "Apple Distribution"
+
+                if target.name == "NotifyKitNSE"
+                  config.build_settings["PROVISIONING_PROFILE_SPECIFIER"] = nse_uuid
+                else
+                  config.build_settings["PROVISIONING_PROFILE_SPECIFIER"] = app_uuid
+                end
+              end
+            end
+
+            project.save
+            puts "Updated signing settings for #{project.targets.map(&:name).join(", ")}"
+          '
+
+      # ── 11. Resolve scheme ───────────────────────────────────────────────────
+      - name: Resolve scheme
+        working-directory: app
+        id: scheme
+        run: |
+          SCHEME=$(xcodebuild -list -project ios/*.xcodeproj 2>/dev/null | grep -A1 "Schemes:" | tail -1 | xargs || \
+                  xcodebuild -list -workspace ios/*.xcworkspace 2>/dev/null | grep -A1 "Schemes:" | tail -1 | xargs)
+          if [ -z "$SCHEME" ]; then
+            echo "ERROR: could not resolve an Xcode scheme" >&2
+            exit 1
+          fi
+          echo "SCHEME=$SCHEME" >> $GITHUB_OUTPUT
+          echo "Resolved scheme: $SCHEME"
+
+      # ── 12. Resolve bundle IDs (device export only) ─────────────────────────
+      - name: Resolve bundle IDs
+        if: ${{ github.event.inputs.target == 'device' }}
+        working-directory: app
+        id: bundles
+        run: |
+          ENV="${{ github.event.inputs.environment || 'development' }}"
+          case "$ENV" in
+            preview)
+              APP_BUNDLE="com.cocointel.practice.preview"
+              ;;
+            production)
+              APP_BUNDLE="com.cocointel.practice"
+              ;;
+            development|*)
+              APP_BUNDLE="com.cocointel.practice.dev"
+              ;;
+          esac
+          NSE_BUNDLE="${APP_BUNDLE}.NotifyKitNSE"
+          echo "APP_BUNDLE=$APP_BUNDLE" >> $GITHUB_OUTPUT
+          echo "NSE_BUNDLE=$NSE_BUNDLE" >> $GITHUB_OUTPUT
+          echo "App bundle: $APP_BUNDLE"
+          echo "NSE bundle: $NSE_BUNDLE"
+
+      # ── 13a. Simulator build — no signing required ──────────────────────────
+      - name: Build for Simulator
+        if: ${{ github.event.inputs.target != 'device' }}
+        working-directory: app/ios
+        run: |
+          xcodebuild build \
+            -workspace *.xcworkspace \
+            -scheme '${{ steps.scheme.outputs.SCHEME }}' \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO
+
+          APP_PATH=$(find build/Build/Products -maxdepth 1 -iname '*-iphonesimulator' -type d | head -1)
+          APP_PATH=$(find "$APP_PATH" -maxdepth 1 -iname '*.app' | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: could not find built .app under build/Build/Products" >&2
+            exit 1
+          fi
+          echo "→ Built app: $APP_PATH"
+          mkdir -p ../dist
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "../dist/CocoPracticeDev-simulator.zip"
+          # ../dist is relative to app/ios, i.e. app/dist — later steps run
+          # with working-directory: app, so record the path relative to that.
+          echo "ARTIFACT_PATH=dist/CocoPracticeDev-simulator.zip" >> "$GITHUB_ENV"
+          echo "ARTIFACT_LABEL=Simulator .app (zip)" >> "$GITHUB_ENV"
+
+      # ── 13b. Device build — manual signing (app + NSE), development export ─
+      - name: Archive for device
+        if: ${{ github.event.inputs.target == 'device' }}
+        working-directory: app/ios
+        run: |
+          xcodebuild archive \
+            -workspace *.xcworkspace \
+            -scheme '${{ steps.scheme.outputs.SCHEME }}' \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/coco-tc.xcarchive" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            DEVELOPMENT_TEAM=Z8778PLB65 \
+            ONLY_ACTIVE_ARCH=NO
+
+      - name: Export IPA
+        if: ${{ github.event.inputs.target == 'device' }}
+        working-directory: app/ios
+        run: |
+          cat > /tmp/export.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>development</string>
+            <key>teamID</key>
+            <string>Z8778PLB65</string>
+            <key>compileBitcode</key>
+            <false/>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${{ steps.bundles.outputs.APP_BUNDLE }}</key>
+              <string>${APP_PROFILE_UUID}</string>
+              <key>${{ steps.bundles.outputs.NSE_BUNDLE }}</key>
+              <string>${NSE_PROFILE_UUID}</string>
+            </dict>
+          </dict>
+          </plist>
+          EOF
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/coco-tc.xcarchive" \
+            -exportPath "$RUNNER_TEMP/ipa" \
+            -exportOptionsPlist /tmp/export.plist
+
+          IPA_PATH=$(find "$RUNNER_TEMP/ipa" -iname '*.ipa' | head -1)
+          if [ -z "$IPA_PATH" ]; then
+            echo "ERROR: exportArchive did not produce an .ipa" >&2
+            exit 1
+          fi
+          mkdir -p ../dist
+          cp "$IPA_PATH" ../dist/CocoPracticeDev-device.ipa
+          echo "ARTIFACT_PATH=dist/CocoPracticeDev-device.ipa" >> "$GITHUB_ENV"
+          echo "ARTIFACT_LABEL=Device .ipa (development signed)" >> "$GITHUB_ENV"
+
+      # ── 14. Get source commit SHA ────────────────────────────────────────────
+      - name: Get source commit SHA
+        working-directory: app
+        run: echo "SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      # ── 15. Create tag + GitHub Release ──────────────────────────────────────
+      - name: Create Release
+        working-directory: app
+        env:
+          GH_TOKEN: ${{ secrets.COCO_PAT }}
+        run: |
+          TAG="tc-build-ios-metro-${{ github.event.inputs.target || 'simulator' }}-${{ github.event.inputs.environment || 'development' }}-$(date +%Y%m%d)-${SOURCE_SHA:0:7}"
+          NOTES="Branch: ${{ github.event.inputs.branch }}
+          Environment: ${{ github.event.inputs.environment || 'development' }}
+          Target: ${{ github.event.inputs.target || 'simulator' }}
+          Artifact: ${ARTIFACT_LABEL}
+          Commit: ${SOURCE_SHA}"
+          gh release create "$TAG" \
+            --repo coco-staging/coco-mobile \
+            --title "TC iOS Metro (${{ github.event.inputs.target || 'simulator' }}) ${{ github.event.inputs.environment || 'development' }} $(date '+%Y-%m-%d')" \
+            --notes "$NOTES" \
+            "$ARTIFACT_PATH"
