@@ -4,28 +4,32 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Branch to build (e.g. develop, main, feat/xyz)'
+        description: "Branch to build (e.g. develop, main, feat/xyz)"
         required: true
-        default: 'develop'
+        default: "develop"
       environment:
-        description: 'Build environment'
+        description: "Build environment"
         required: true
-        default: 'production'
+        default: "production"
         type: choice
         options:
           - development
           - preview
           - production
       export-method:
-        description: 'Export method'
+        description: "Export method"
         required: true
-        default: 'app-store'
+        default: "app-store"
         type: choice
         options:
           - app-store
           - enterprise
           - ad-hoc
           - development
+      provisioning-profile-specifier:
+        description: "Optional provisioning profile name override (manual signing)"
+        required: false
+        default: ""
 
 jobs:
   build-ios:
@@ -54,14 +58,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20.19.4'
-          cache: 'yarn'
+          node-version: "20.19.4"
+          cache: "yarn"
           cache-dependency-path: app/yarn.lock
 
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: '3.3'
+          ruby-version: "3.3"
           bundler-cache: false
 
       # ── 3.5. Pin Xcode version ───────────────────────────────────────────────
@@ -160,8 +164,51 @@ jobs:
         env:
           PROV_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
         run: |
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          echo "$PROV_BASE64" | tr -d '[:space:]' | base64 -d > ~/Library/MobileDevice/Provisioning\ Profiles/coco-release.mobileprovision
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          PROFILE_PATH="$PROFILE_DIR/coco-release.mobileprovision"
+
+          mkdir -p "$PROFILE_DIR"
+          echo "$PROV_BASE64" | tr -d '[:space:]' | base64 -d > "$PROFILE_PATH"
+
+          security cms -D -i "$PROFILE_PATH" > /tmp/profile.plist
+
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' /tmp/profile.plist)
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' /tmp/profile.plist)
+          PROFILE_TEAM_ID=$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' /tmp/profile.plist)
+          PROFILE_APP_IDENTIFIER=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' /tmp/profile.plist)
+
+          # Store profile under UUID-based filename so Xcode consistently discovers it.
+          cp "$PROFILE_PATH" "$PROFILE_DIR/$PROFILE_UUID.mobileprovision"
+
+          APS_ENV=''
+          if /usr/libexec/PlistBuddy -c 'Print :Entitlements:aps-environment' /tmp/profile.plist >/dev/null 2>&1; then
+            APS_ENV=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:aps-environment' /tmp/profile.plist)
+          fi
+
+          if [ -z "$APS_ENV" ]; then
+            echo 'ERROR: Provisioning profile does not include Push Notifications entitlement (aps-environment).' >&2
+            echo "Profile: $PROFILE_NAME ($PROFILE_UUID)" >&2
+            exit 1
+          fi
+
+          if [ "$PROFILE_TEAM_ID" != 'Z8778PLB65' ]; then
+            echo "ERROR: Profile team id mismatch. Expected Z8778PLB65, got $PROFILE_TEAM_ID" >&2
+            exit 1
+          fi
+
+          PROFILE_SPECIFIER="${{ github.event.inputs.provisioning-profile-specifier }}"
+          if [ -z "$PROFILE_SPECIFIER" ]; then
+            PROFILE_SPECIFIER="$PROFILE_NAME"
+          fi
+
+          echo "Using provisioning profile: $PROFILE_NAME ($PROFILE_UUID)"
+          echo "Profile team: $PROFILE_TEAM_ID"
+          echo "Profile app identifier entitlement: $PROFILE_APP_IDENTIFIER"
+          echo "Profile aps-environment: $APS_ENV"
+
+          echo "PROFILE_UUID=$PROFILE_UUID" >> "$GITHUB_ENV"
+          echo "PROFILE_NAME=$PROFILE_NAME" >> "$GITHUB_ENV"
+          echo "PROFILE_SPECIFIER=$PROFILE_SPECIFIER" >> "$GITHUB_ENV"
 
       # ── 8. Generate native iOS project ──────────────────────────────────────
       - name: Run expo prebuild
@@ -195,6 +242,7 @@ jobs:
             -allowProvisioningUpdates \
             CODE_SIGN_STYLE=Manual \
             DEVELOPMENT_TEAM=Z8778PLB65 \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_SPECIFIER" \
             ONLY_ACTIVE_ARCH=NO
 
       # ── 12. Export IPA ──────────────────────────────────────────────────────

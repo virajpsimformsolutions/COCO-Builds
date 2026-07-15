@@ -186,28 +186,44 @@ jobs:
         working-directory: app
         run: npx expo prebuild --platform ios --clean
 
-      # ── 8.5. Patch Podfile: allow non-modular headers in framework modules ──
+      # ── 8.5. Patch Podfile for react-native-firebase + use_frameworks! ──────
       # coco-mobile builds with use_frameworks! :linkage => :static (set via
-      # expo-build-properties, required by react-native-firebase). On this
-      # runner's Xcode/CocoaPods toolchain, react-native-firebase's own
-      # headers (which #import <React/RCTConvert.h> etc.) get rejected as
-      # "non-modular header inside framework module 'RNFBApp...'" during
-      # precompile — EAS Build's own image doesn't hit this, but this one
-      # does. Insert the standard fix into the generated Podfile's
-      # post_install hook, before `pod install` applies it to every target.
-      - name: Patch Podfile for non-modular header includes
+      # expo-build-properties, required by react-native-firebase). Two fixes
+      # are needed for RNFB specifically on this runner's toolchain (EAS
+      # Build's own image doesn't hit either):
+      #   1. $RNFirebaseAsStaticFramework = true — RNFB's own podspecs
+      #      (RNFBApp, RNFBMessaging, RNFBAppCheck, ...) check this global and
+      #      override their own static_framework setting when it's set. Without
+      #      it, RNFB builds a dynamic-style framework module even though
+      #      use_frameworks! is static overall, which breaks module boundaries
+      #      and produces "declaration of 'RCTPromiseRejectBlock' must be
+      #      imported from module 'RNFBApp.RNFBAppModule' before it is
+      #      required" (plus cascading parse errors in the same file). Must be
+      #      set before `pod install` evaluates the podspecs, so it's
+      #      prepended at the very top of the file.
+      #   2. CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES = YES —
+      #      allows RNFB's headers (which #import <React/RCTConvert.h> etc.,
+      #      non-modular) inside its own framework module. Inserted into the
+      #      generated Podfile's post_install hook.
+      - name: Patch Podfile for RNFB + use_frameworks!
         working-directory: app/ios
         run: |
           ruby -e '
             content = File.read("Podfile")
+
+            unless content.include?("$RNFirebaseAsStaticFramework")
+              content = "$RNFirebaseAsStaticFramework = true\n" + content
+            end
+
             marker = "post_install do |installer|"
             idx = content.index(marker)
             raise "post_install hook not found in generated Podfile" unless idx
             insert_at = idx + marker.length
             patch = "\n    installer.pods_project.targets.each do |target|\n      target.build_configurations.each do |config|\n        config.build_settings[\"CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES\"] = \"YES\"\n      end\n    end\n"
             content = content[0...insert_at] + patch + content[insert_at..-1]
+
             File.write("Podfile", content)
-            puts "-> Patched Podfile post_install hook (CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES)"
+            puts "-> Patched Podfile (RNFirebaseAsStaticFramework + CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES)"
           '
 
       # ── 9. Install CocoaPods ────────────────────────────────────────────────
