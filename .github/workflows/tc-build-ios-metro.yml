@@ -199,6 +199,30 @@ jobs:
         working-directory: app
         run: npx expo prebuild --platform ios --clean
 
+      # ── 8.5. Patch Podfile: allow non-modular headers in framework modules ──
+      # coco-mobile builds with use_frameworks! :linkage => :static (set via
+      # expo-build-properties, required by react-native-firebase). On this
+      # runner's Xcode/CocoaPods toolchain, react-native-firebase's own
+      # headers (which #import <React/RCTConvert.h> etc.) get rejected as
+      # "non-modular header inside framework module 'RNFBApp...'" during
+      # precompile — EAS Build's own image doesn't hit this, but this one
+      # does. Insert the standard fix into the generated Podfile's
+      # post_install hook, before `pod install` applies it to every target.
+      - name: Patch Podfile for non-modular header includes
+        working-directory: app/ios
+        run: |
+          ruby -e '
+            content = File.read("Podfile")
+            marker = "post_install do |installer|"
+            idx = content.index(marker)
+            raise "post_install hook not found in generated Podfile" unless idx
+            insert_at = idx + marker.length
+            patch = "\n    installer.pods_project.targets.each do |target|\n      target.build_configurations.each do |config|\n        config.build_settings[\"CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES\"] = \"YES\"\n      end\n    end\n"
+            content = content[0...insert_at] + patch + content[insert_at..-1]
+            File.write("Podfile", content)
+            puts "-> Patched Podfile post_install hook (CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES)"
+          '
+
       # ── 9. Install CocoaPods ────────────────────────────────────────────────
       - name: Install CocoaPods
         working-directory: app/ios
