@@ -203,6 +203,27 @@ jobs:
           echo "SCHEME=$SCHEME" >> $GITHUB_OUTPUT
           echo "Resolved scheme: $SCHEME"
 
+      # ── 11.5. Resolve bundle ID (device export only) ────────────────────────
+      - name: Resolve bundle ID
+        if: ${{ github.event.inputs.target == 'device' }}
+        working-directory: app
+        id: bundle
+        run: |
+          ENV="${{ github.event.inputs.environment || 'development' }}"
+          case "$ENV" in
+            preview)
+              APP_BUNDLE="com.cocointel.smile.preview"
+              ;;
+            production)
+              APP_BUNDLE="com.cocointel.smile"
+              ;;
+            development|*)
+              APP_BUNDLE="com.cocointel.smile.dev"
+              ;;
+          esac
+          echo "APP_BUNDLE=$APP_BUNDLE" >> $GITHUB_OUTPUT
+          echo "App bundle: $APP_BUNDLE"
+
       # ── 11a. Simulator build — no signing required ──────────────────────────
       - name: Build for Simulator
         if: ${{ github.event.inputs.target != 'device' }}
@@ -242,9 +263,10 @@ jobs:
             -scheme '${{ steps.scheme.outputs.SCHEME }}' \
             -configuration Release \
             -archivePath "$RUNNER_TEMP/coco.xcarchive" \
-            -allowProvisioningUpdates \
             CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
             DEVELOPMENT_TEAM=Z8778PLB65 \
+            PROVISIONING_PROFILE_SPECIFIER="${{ env.APP_PROFILE_UUID }}" \
             ONLY_ACTIVE_ARCH=NO
 
       - name: Export IPA
@@ -261,6 +283,13 @@ jobs:
             <string>Z8778PLB65</string>
             <key>compileBitcode</key>
             <false/>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${{ steps.bundle.outputs.APP_BUNDLE }}</key>
+              <string>${{ env.APP_PROFILE_UUID }}</string>
+            </dict>
           </dict>
           </plist>
           EOF
@@ -268,8 +297,7 @@ jobs:
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/coco.xcarchive" \
             -exportPath "$RUNNER_TEMP/ipa" \
-            -exportOptionsPlist /tmp/export.plist \
-            -allowProvisioningUpdates
+            -exportOptionsPlist /tmp/export.plist
 
           IPA_PATH=$(find "$RUNNER_TEMP/ipa" -iname '*.ipa' | head -1)
           if [ -z "$IPA_PATH" ]; then
