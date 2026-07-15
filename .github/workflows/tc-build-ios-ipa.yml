@@ -4,22 +4,22 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Branch to build (e.g. develop, main, feat/xyz)'
+        description: "Branch to build (e.g. develop, main, feat/xyz)"
         required: true
-        default: 'develop'
+        default: "develop"
       environment:
-        description: 'Build environment'
+        description: "Build environment"
         required: true
-        default: 'production'
+        default: "development"
         type: choice
         options:
           - development
           - preview
           - production
       export-method:
-        description: 'Export method'
+        description: "Export method"
         required: true
-        default: 'app-store'
+        default: "app-store"
         type: choice
         options:
           - app-store
@@ -30,7 +30,7 @@ on:
 jobs:
   build-ios:
     name: TC Build IPA (${{ github.event.inputs.environment || 'production' }})
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 90
 
     steps:
@@ -54,28 +54,27 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20.19.4'
-          cache: 'yarn'
+          node-version: "20.19.4"
+          cache: "yarn"
           cache-dependency-path: app/yarn.lock
 
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: '3.3'
+          ruby-version: "3.3"
           bundler-cache: false
 
-      # ── 3.5. Pin Xcode version ───────────────────────────────────────────────
-      # macos-15 defaults to Xcode 16.4, but pin explicitly in case GitHub changes
-      # the image default. Newer Xcode (26.x, picked up automatically when this
-      # workflow ran on macos-latest before it was pinned) enables Explicit
-      # Modules by default, which breaks RCT_EXPORT_MODULE/RCT_EXPORT_METHOD
-      # macro visibility in react-native-firebase's RNFBMessaging - see
-      # "declaration of 'RCTPromiseRejectBlock' must be imported from module
-      # 'RNFBApp...' before it is required" in Archive step failures.
-      - name: Select Xcode 16.4
+      # ── 3.5. Select latest available Xcode ──────────────────────────────────
+      # Keep CI aligned with current toolchains used by Expo/RN dependencies.
+      - name: Select latest Xcode
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.4.app 2>/dev/null || \
-          { echo "Xcode 16.4 not found. Available versions:"; ls /Applications/Xcode*.app 2>/dev/null || echo "No Xcode*.app found"; echo "Current: $(xcode-select -p)"; exit 1; }
+          XCODE_APP=$(ls -1d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE_APP" ]; then
+            echo "No Xcode*.app found" >&2
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          echo "Selected Xcode: $XCODE_APP"
           xcodebuild -version
 
       # ── 4. Install dependencies ────────────────────────────────────────────
@@ -185,46 +184,6 @@ jobs:
       - name: Run expo prebuild
         working-directory: app
         run: npx expo prebuild --platform ios --clean
-
-      # ── 8.5. Patch Podfile for react-native-firebase + use_frameworks! ──────
-      # coco-mobile builds with use_frameworks! :linkage => :static (set via
-      # expo-build-properties, required by react-native-firebase). Two fixes
-      # are needed for RNFB specifically on this runner's toolchain (EAS
-      # Build's own image doesn't hit either):
-      #   1. $RNFirebaseAsStaticFramework = true — RNFB's own podspecs
-      #      (RNFBApp, RNFBMessaging, RNFBAppCheck, ...) check this global and
-      #      override their own static_framework setting when it's set. Without
-      #      it, RNFB builds a dynamic-style framework module even though
-      #      use_frameworks! is static overall, which breaks module boundaries
-      #      and produces "declaration of 'RCTPromiseRejectBlock' must be
-      #      imported from module 'RNFBApp.RNFBAppModule' before it is
-      #      required" (plus cascading parse errors in the same file). Must be
-      #      set before `pod install` evaluates the podspecs, so it's
-      #      prepended at the very top of the file.
-      #   2. CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES = YES —
-      #      allows RNFB's headers (which #import <React/RCTConvert.h> etc.,
-      #      non-modular) inside its own framework module. Inserted into the
-      #      generated Podfile's post_install hook.
-      - name: Patch Podfile for RNFB + use_frameworks!
-        working-directory: app/ios
-        run: |
-          ruby -e '
-            content = File.read("Podfile")
-
-            unless content.include?("$RNFirebaseAsStaticFramework")
-              content = "$RNFirebaseAsStaticFramework = true\n" + content
-            end
-
-            marker = "post_install do |installer|"
-            idx = content.index(marker)
-            raise "post_install hook not found in generated Podfile" unless idx
-            insert_at = idx + marker.length
-            patch = "\n    installer.pods_project.targets.each do |target|\n      target.build_configurations.each do |config|\n        config.build_settings[\"CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES\"] = \"YES\"\n      end\n    end\n"
-            content = content[0...insert_at] + patch + content[insert_at..-1]
-
-            File.write("Podfile", content)
-            puts "-> Patched Podfile (RNFirebaseAsStaticFramework + CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES)"
-          '
 
       # ── 9. Install CocoaPods ────────────────────────────────────────────────
       - name: Install CocoaPods

@@ -201,23 +201,34 @@ jobs:
 
       # ── 8.5. Patch Podfile for react-native-firebase + use_frameworks! ──────
       # coco-mobile builds with use_frameworks! :linkage => :static (set via
-      # expo-build-properties, required by react-native-firebase). Two fixes
-      # are needed for RNFB specifically on this runner's toolchain (EAS
-      # Build's own image doesn't hit either):
+      # expo-build-properties, required by react-native-firebase). Fixes
+      # needed for RNFB specifically on this runner's toolchain (EAS
+      # Build's own image doesn't hit any of these):
       #   1. $RNFirebaseAsStaticFramework = true — RNFB's own podspecs
       #      (RNFBApp, RNFBMessaging, RNFBAppCheck, ...) check this global and
-      #      override their own static_framework setting when it's set. Without
-      #      it, RNFB builds a dynamic-style framework module even though
-      #      use_frameworks! is static overall, which breaks module boundaries
-      #      and produces "declaration of 'RCTPromiseRejectBlock' must be
-      #      imported from module 'RNFBApp.RNFBAppModule' before it is
-      #      required" (plus cascading parse errors in the same file). Must be
-      #      set before `pod install` evaluates the podspecs, so it's
+      #      override their own static_framework setting when it's set. Must
+      #      be set before `pod install` evaluates the podspecs, so it's
       #      prepended at the very top of the file.
       #   2. CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES = YES —
       #      allows RNFB's headers (which #import <React/RCTConvert.h> etc.,
-      #      non-modular) inside its own framework module. Inserted into the
-      #      generated Podfile's post_install hook.
+      #      non-modular) inside its own framework module.
+      #   3. CLANG_ENABLE_EXPLICIT_MODULES = NO — macos-15's Xcode 16.4
+      #      toolchain still precompiles each pod as an isolated explicit
+      #      module (separate .pcm per pod, `-fno-implicit-modules` +
+      #      `-fmodule-file=RNFBApp=....pcm` in the failing clang invocation)
+      #      even though we pinned Xcode 16.4 specifically to avoid this.
+      #      Under explicit modules, a target must directly declare every
+      #      module whose declarations it uses — RNFBMessaging picking up
+      #      RCTPromiseRejectBlock transitively through RNFBApp's module
+      #      (rather than importing React-Core's module directly) is exactly
+      #      the kind of layering explicit modules forbids, producing
+      #      "declaration of 'RCTPromiseRejectBlock' must be imported from
+      #      module 'RNFBApp.RNFBAppModule' before it is required". Fix #1
+      #      alone did not resolve this (confirmed via a fresh CI run on
+      #      tc-build-ios-ipa.yml commit da48404 — identical error recurred).
+      #      Forcing classic implicit module builds for the Pods project
+      #      relaxes this strict boundary check. Unverified by a fresh CI run
+      #      as of this commit — needs confirmation on the next build.
       - name: Patch Podfile for RNFB + use_frameworks!
         working-directory: app/ios
         run: |
@@ -232,11 +243,11 @@ jobs:
             idx = content.index(marker)
             raise "post_install hook not found in generated Podfile" unless idx
             insert_at = idx + marker.length
-            patch = "\n    installer.pods_project.targets.each do |target|\n      target.build_configurations.each do |config|\n        config.build_settings[\"CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES\"] = \"YES\"\n      end\n    end\n"
+            patch = "\n    installer.pods_project.targets.each do |target|\n      target.build_configurations.each do |config|\n        config.build_settings[\"CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES\"] = \"YES\"\n        config.build_settings[\"CLANG_ENABLE_EXPLICIT_MODULES\"] = \"NO\"\n      end\n    end\n"
             content = content[0...insert_at] + patch + content[insert_at..-1]
 
             File.write("Podfile", content)
-            puts "-> Patched Podfile (RNFirebaseAsStaticFramework + CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES)"
+            puts "-> Patched Podfile (RNFirebaseAsStaticFramework + CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES + CLANG_ENABLE_EXPLICIT_MODULES=NO)"
           '
 
       # ── 9. Install CocoaPods ────────────────────────────────────────────────
