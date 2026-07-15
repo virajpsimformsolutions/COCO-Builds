@@ -266,7 +266,7 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Apple Distribution" \
             DEVELOPMENT_TEAM=Z8778PLB65 \
-            PROVISIONING_PROFILE_SPECIFIER="${{ env.APP_PROFILE_UUID }}" \
+            PROVISIONING_PROFILE_SPECIFIER="${APP_PROFILE_UUID}" \
             ONLY_ACTIVE_ARCH=NO
 
       - name: Export IPA
@@ -288,7 +288,7 @@ jobs:
             <key>provisioningProfiles</key>
             <dict>
               <key>${{ steps.bundle.outputs.APP_BUNDLE }}</key>
-              <string>${{ env.APP_PROFILE_UUID }}</string>
+              <string>${APP_PROFILE_UUID}</string>
             </dict>
           </dict>
           </plist>

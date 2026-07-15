@@ -216,9 +216,11 @@ jobs:
       - name: Configure manual signing in pbxproj
         if: ${{ github.event.inputs.target == 'device' }}
         working-directory: app/ios
-        env:
-          APP_PROFILE_UUID: ${{ env.APP_PROFILE_UUID }}
-          NSE_PROFILE_UUID: ${{ env.NSE_PROFILE_UUID }}
+        # APP_PROFILE_UUID / NSE_PROFILE_UUID were written via $GITHUB_ENV in
+        # "Install Provisioning Profiles (app + NSE)" above — they're already
+        # real process env vars for every later step in this job, so no
+        # explicit env: passthrough (and no ${{ env.* }} expression) is
+        # needed here; Ruby's ENV[] reads them directly.
         run: |
           ruby -e '
             require "xcodeproj"
@@ -350,9 +352,9 @@ jobs:
             <key>provisioningProfiles</key>
             <dict>
               <key>${{ steps.bundles.outputs.APP_BUNDLE }}</key>
-              <string>${{ env.APP_PROFILE_UUID }}</string>
+              <string>${APP_PROFILE_UUID}</string>
               <key>${{ steps.bundles.outputs.NSE_BUNDLE }}</key>
-              <string>${{ env.NSE_PROFILE_UUID }}</string>
+              <string>${NSE_PROFILE_UUID}</string>
             </dict>
           </dict>
           </plist>
