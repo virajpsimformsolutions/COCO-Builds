@@ -78,7 +78,7 @@ jobs:
       - name: Compute fingerprint
         working-directory: app
         run: |
-          npx --yes @expo/fingerprint@0.16.7 . --platform android > /tmp/fingerprint.json
+          npx --yes @expo/fingerprint@0.16.7 fingerprint:generate --platform android . > /tmp/fingerprint.json
           FINGERPRINT_HASH=$(node -e "console.log(require('/tmp/fingerprint.json').hash)")
           echo "→ Fingerprint: $FINGERPRINT_HASH"
           echo "FINGERPRINT_HASH=$FINGERPRINT_HASH" >> "$GITHUB_ENV"
