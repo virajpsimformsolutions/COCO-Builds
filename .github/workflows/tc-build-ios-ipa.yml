@@ -24,10 +24,6 @@ on:
         options:
           - self-hosted
           - github-hosted
-      xcode:
-        description: "Preferred Xcode version (must be >= 26.0 for Expo SDK 55)"
-        required: true
-        default: "26.6"
 
 jobs:
   build-ios:
@@ -60,130 +56,10 @@ jobs:
           cache: "yarn"
           cache-dependency-path: app/yarn.lock
 
-      # ── 3.5. Select compatible Xcode for Expo SDK 55 ─────────────────────
-      - name: Select Xcode >= 26
-        env:
-          REQUESTED_XCODE: ${{ github.event.inputs.xcode || '26.6' }}
-        run: |
-          set -euo pipefail
-
-          ruby <<'RUBY'
-          requested = ENV.fetch("REQUESTED_XCODE")
-          min_major = 26
-
-          candidates = Dir.glob("/Applications/Xcode*.app").select { |p| File.directory?(p) }
-
-          parsed = candidates.filter_map do |app|
-            xb = File.join(app, "Contents/Developer/usr/bin/xcodebuild")
-            next unless File.executable?(xb)
-
-            version_line = `"#{xb}" -version 2>/dev/null`.lines.find { |l| l.start_with?("Xcode ") }
-            next unless version_line
-
-            version = version_line.split[1]
-            major = version.split(".").first.to_i
-            [app, version, major]
-          end
-
-          if parsed.empty?
-            abort("ERROR: no usable Xcode installations found under /Applications")
-          end
-
-          requested_match = parsed.find { |_app, version, _major| version == requested }
-
-          selected = if requested_match
-            requested_match
-          else
-            parsed
-              .select { |_app, _version, major| major >= min_major }
-              .max_by { |_app, version, _major| version.split('.').map(&:to_i) }
-          end
-
-          unless selected
-            installed = parsed.map { |_app, version, _major| version }.uniq.sort.join(", ")
-            abort("ERROR: Expo SDK 55 requires Xcode >= #{min_major}.0. Requested #{requested}. Installed: [#{installed}]. Use self-hosted runner with Xcode 26+.")
-          end
-
-          app, version, major = selected
-          if major < min_major
-            abort("ERROR: selected Xcode #{version} is below required #{min_major}.0")
-          end
-
-          File.open(ENV.fetch("GITHUB_ENV"), "a") do |f|
-            f.puts("SELECTED_XCODE_APP=#{app}")
-            f.puts("SELECTED_XCODE_VERSION=#{version}")
-            f.puts("DEVELOPER_DIR=#{app}/Contents/Developer")
-          end
-
-          puts("Selected Xcode #{version} at #{app}")
-          RUBY
-
-          SELECTED_XCODE_APP="${SELECTED_XCODE_APP:-}"
-          if [ -z "$SELECTED_XCODE_APP" ]; then
-            SELECTED_XCODE_APP="$(grep '^SELECTED_XCODE_APP=' "$GITHUB_ENV" | tail -n 1 | cut -d= -f2-)"
-          fi
-
-          if [ -z "$SELECTED_XCODE_APP" ]; then
-            echo "ERROR: failed to resolve SELECTED_XCODE_APP after Xcode selection" >&2
-            exit 1
-          fi
-
-          if ! sudo xcode-select -s "$SELECTED_XCODE_APP/Contents/Developer"; then
-            xcode-select -s "$SELECTED_XCODE_APP/Contents/Developer"
-          fi
-
-          echo "Active Xcode:"
-          xcodebuild -version
-
       # ── 4. Install dependencies ────────────────────────────────────────────
       - name: Install dependencies
         working-directory: app
         run: yarn install --frozen-lockfile
-
-      # ── 4.5. Persist RNFBApp non-modular include fix via patch-package ────
-      - name: Generate RNFBApp patch-package fix (managed EAS-safe)
-        working-directory: app
-        run: |
-          set -euo pipefail
-
-          mkdir -p patches
-          rm -f patches/@react-native-firebase+app+*.patch
-
-          ruby <<'RUBY'
-          podspec = "node_modules/@react-native-firebase/app/RNFBApp.podspec"
-          abort("ERROR: #{podspec} not found") unless File.exist?(podspec)
-
-          content = File.read(podspec)
-
-          # Skip if already patched in node_modules for this run.
-          if content.include?("CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES")
-            puts("RNFBApp.podspec already patched; continuing")
-            exit 0
-          end
-
-          replacement = <<~'REPL'.strip
-            "DEFINES_MODULE" => "YES",
-                "CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES" => "YES",
-                "OTHER_CFLAGS" => "$(inherited) -Wno-error=non-modular-include-in-framework-module",
-          REPL
-
-          unless content.sub!('"DEFINES_MODULE" => "YES",', replacement)
-            abort("ERROR: could not patch RNFBApp.podspec; DEFINES_MODULE stanza not found")
-          end
-
-          File.write(podspec, content)
-          puts("Patched #{podspec}")
-          RUBY
-
-          npx patch-package @react-native-firebase/app
-
-          PATCH_FILE="$(ls -1 patches/@react-native-firebase+app+*.patch 2>/dev/null | head -n 1 || true)"
-          if [ -z "$PATCH_FILE" ] || [ ! -f "$PATCH_FILE" ]; then
-            echo "ERROR: RNFB patch-package file was not generated" >&2
-            exit 1
-          fi
-
-          echo "Generated RNFB patch: $PATCH_FILE"
 
       # ── 5. Write .env file from secrets ────────────────────────────────────
       - name: Write .env file
@@ -249,70 +125,18 @@ jobs:
           echo "PROFILE=$PROFILE" >> "$GITHUB_OUTPUT"
           echo "Using EAS profile: $PROFILE"
 
-      # ── 7.5. Generate iOS project and patch Podfile for Xcode 26+ ─────────
+      # ── 7.5. Generate iOS project for local build ──────────────────────────
       - name: Run expo prebuild (iOS)
         working-directory: app
-        env:
-          DEVELOPER_DIR: ${{ env.DEVELOPER_DIR }}
         run: npx expo prebuild --platform ios --clean --non-interactive
-
-      - name: Patch Podfile to allow non-modular includes in Pods
-        working-directory: app/ios
-        env:
-          DEVELOPER_DIR: ${{ env.DEVELOPER_DIR }}
-        run: |
-          set -euo pipefail
-          ruby <<'RUBY'
-          podfile = "Podfile"
-          content = File.read(podfile)
-          marker_start = "# BEGIN CI_RNFB_NON_MODULAR_HEADERS"
-          marker_end = "# END CI_RNFB_NON_MODULAR_HEADERS"
-
-          if content.include?(marker_start)
-            puts("Podfile already contains CI RNFB non-modular settings; skipping")
-            exit 0
-          end
-
-          anchor_re = /^(\s*post_install do \|installer\|\n)/
-          unless content.match?(anchor_re)
-            abort("ERROR: post_install block not found in ios/Podfile")
-          end
-
-          insertion = <<~'RUBY_SNIPPET'
-              #{marker_start}
-              installer.pods_project.targets.each do |target|
-                target.build_configurations.each do |config|
-                  config.build_settings['CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES'] = 'YES'
-
-                  flags = config.build_settings['OTHER_CFLAGS'] || ['$(inherited)']
-                  flags = [flags] if flags.is_a?(String)
-                  unless flags.include?('-Wno-error=non-modular-include-in-framework-module')
-                    flags << '-Wno-error=non-modular-include-in-framework-module'
-                  end
-                  config.build_settings['OTHER_CFLAGS'] = flags
-                end
-              end
-              #{marker_end}
-
-          RUBY_SNIPPET
-
-          content.sub!(anchor_re) { |match| "#{match}#{insertion}" }
-          File.write(podfile, content)
-          puts("Patched ios/Podfile post_install with deterministic RNFB non-modular include settings")
-          RUBY
 
       - name: Install CocoaPods dependencies
         working-directory: app/ios
-        env:
-          DEVELOPER_DIR: ${{ env.DEVELOPER_DIR }}
         run: |
           set -euo pipefail
-          pod deintegrate
-          pod install --repo-update
+          pod install
 
       - name: Clean Xcode DerivedData
-        env:
-          DEVELOPER_DIR: ${{ env.DEVELOPER_DIR }}
         run: |
           set -euo pipefail
           rm -rf ~/Library/Developer/Xcode/DerivedData/*
@@ -323,7 +147,6 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           EAS_LOCAL_BUILD_SKIP_CLEANUP: 1
-          DEVELOPER_DIR: ${{ env.DEVELOPER_DIR }}
         run: |
           set -euo pipefail
 
@@ -335,7 +158,6 @@ jobs:
           mkdir -p "${{ runner.temp }}/ipa"
           IPA_PATH="${{ runner.temp }}/ipa/coco-tc-${{ steps.eas_profile.outputs.PROFILE }}.ipa"
 
-          echo "Using DEVELOPER_DIR=${DEVELOPER_DIR:-<unset>}"
           echo "xcode-select path: $(xcode-select -p)"
           xcodebuild -version
 

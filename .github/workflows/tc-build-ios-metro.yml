@@ -32,10 +32,6 @@ on:
         options:
           - self-hosted
           - github-hosted
-      xcode:
-        description: "Preferred Xcode version (must be >= 26.0 for Expo SDK 55)"
-        required: true
-        default: "26.6"
 
 jobs:
   build-ios:
@@ -64,79 +60,6 @@ jobs:
           node-version: "20.19.4"
           cache: "yarn"
           cache-dependency-path: app/yarn.lock
-
-      - name: Select Xcode >= 26
-        env:
-          REQUESTED_XCODE: ${{ github.event.inputs.xcode || '26.6' }}
-        run: |
-          set -euo pipefail
-
-          ruby <<'RUBY'
-          requested = ENV.fetch("REQUESTED_XCODE")
-          min_major = 26
-
-          candidates = Dir.glob("/Applications/Xcode*.app").select { |p| File.directory?(p) }
-
-          parsed = candidates.filter_map do |app|
-            xb = File.join(app, "Contents/Developer/usr/bin/xcodebuild")
-            next unless File.executable?(xb)
-
-            version_line = `"#{xb}" -version 2>/dev/null`.lines.find { |l| l.start_with?("Xcode ") }
-            next unless version_line
-
-            version = version_line.split[1]
-            major = version.split(".").first.to_i
-            [app, version, major]
-          end
-
-          if parsed.empty?
-            abort("ERROR: no usable Xcode installations found under /Applications")
-          end
-
-          requested_match = parsed.find { |_app, version, _major| version == requested }
-
-          selected = if requested_match
-            requested_match
-          else
-            parsed
-              .select { |_app, _version, major| major >= min_major }
-              .max_by { |_app, version, _major| version.split('.').map(&:to_i) }
-          end
-
-          unless selected
-            installed = parsed.map { |_app, version, _major| version }.uniq.sort.join(", ")
-            abort("ERROR: Expo SDK 55 requires Xcode >= #{min_major}.0. Requested #{requested}. Installed: [#{installed}]. Use self-hosted runner with Xcode 26+.")
-          end
-
-          app, version, major = selected
-          if major < min_major
-            abort("ERROR: selected Xcode #{version} is below required #{min_major}.0")
-          end
-
-          File.open(ENV.fetch("GITHUB_ENV"), "a") do |f|
-            f.puts("SELECTED_XCODE_APP=#{app}")
-            f.puts("SELECTED_XCODE_VERSION=#{version}")
-          end
-
-          puts("Selected Xcode #{version} at #{app}")
-          RUBY
-
-          SELECTED_XCODE_APP="${SELECTED_XCODE_APP:-}"
-          if [ -z "$SELECTED_XCODE_APP" ]; then
-            SELECTED_XCODE_APP="$(grep '^SELECTED_XCODE_APP=' "$GITHUB_ENV" | tail -n 1 | cut -d= -f2-)"
-          fi
-
-          if [ -z "$SELECTED_XCODE_APP" ]; then
-            echo "ERROR: failed to resolve SELECTED_XCODE_APP after Xcode selection" >&2
-            exit 1
-          fi
-
-          if ! sudo xcode-select -s "$SELECTED_XCODE_APP/Contents/Developer"; then
-            xcode-select -s "$SELECTED_XCODE_APP/Contents/Developer"
-          fi
-
-          echo "Active Xcode:"
-          xcodebuild -version
 
       - name: Install dependencies
         working-directory: app
