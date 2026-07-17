@@ -24,6 +24,11 @@ on:
         options:
           - self-hosted
           - github-hosted
+      enable_rnrepo:
+        description: "Use RNRepo prebuilt native artifacts"
+        required: true
+        default: true
+        type: boolean
 
 jobs:
   build-ios:
@@ -55,6 +60,14 @@ jobs:
           node-version: "20.19.4"
           cache: "yarn"
           cache-dependency-path: app/yarn.lock
+
+      - name: Cache RNRepo iOS artifacts
+        uses: actions/cache@v4
+        with:
+          path: ~/.rnrepo-cache
+          key: rnrepo-ios-${{ runner.os }}-${{ hashFiles('app/yarn.lock', 'app/rnrepo.config.json') }}
+          restore-keys: |
+            rnrepo-ios-${{ runner.os }}-
 
       # ── 4. Install dependencies ────────────────────────────────────────────
       - name: Install dependencies
@@ -147,6 +160,7 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           EAS_LOCAL_BUILD_SKIP_CLEANUP: 1
+          DISABLE_RNREPO: ${{ github.event.inputs.enable_rnrepo == 'true' && '0' || '1' }}
         run: |
           set -euo pipefail
 
