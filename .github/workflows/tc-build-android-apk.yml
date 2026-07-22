@@ -77,12 +77,8 @@ jobs:
           ENV_AZURE_CLIENT_ID: ${{ secrets.COCO_TC_AZURE_CLIENT_ID }}
           ENV_AZURE_TENANT_ID: ${{ secrets.COCO_TC_AZURE_TENANT_ID }}
           ENV_AZURE_REDIRECT_URI: ${{ secrets.COCO_TC_AZURE_REDIRECT_URI }}
-          ENV_STORAGE_ENCRYPTION_KEY: ${{ secrets.COCO_TC_STORAGE_ENCRYPTION_KEY }}
-          ENV_SOCKET_URL: ${{ secrets.COCO_TC_SOCKET_URL }}
           ENV_API_PIN: ${{ secrets.COCO_TC_API_PIN_SHA256 }}
-          ENV_SOCKET_PIN: ${{ secrets.COCO_TC_SOCKET_PIN_SHA256 }}
           ENV_API_PIN_EXPIRY: ${{ secrets.COCO_TC_API_PIN_EXPIRES_AT }}
-          ENV_SOCKET_PIN_EXPIRY: ${{ secrets.COCO_TC_SOCKET_PIN_EXPIRES_AT }}
         run: |
           {
             echo "EXPO_PUBLIC_API_URL=${ENV_API_URL}"
@@ -95,12 +91,8 @@ jobs:
             echo "EXPO_PUBLIC_AZURE_CLIENT_ID=${ENV_AZURE_CLIENT_ID}"
             echo "EXPO_PUBLIC_AZURE_TENANT_ID=${ENV_AZURE_TENANT_ID}"
             echo "EXPO_PUBLIC_AZURE_REDIRECT_URI=${ENV_AZURE_REDIRECT_URI}"
-            echo "EXPO_PUBLIC_STORAGE_ENCRYPTION_KEY=${ENV_STORAGE_ENCRYPTION_KEY}"
-            echo "EXPO_PUBLIC_SOCKET_URL=${ENV_SOCKET_URL}"
             echo "EXPO_PUBLIC_API_PIN_SHA256=${ENV_API_PIN}"
-            echo "EXPO_PUBLIC_SOCKET_PIN_SHA256=${ENV_SOCKET_PIN}"
             echo "EXPO_PUBLIC_API_PIN_EXPIRES_AT=${ENV_API_PIN_EXPIRY}"
-            echo "EXPO_PUBLIC_SOCKET_PIN_EXPIRES_AT=${ENV_SOCKET_PIN_EXPIRY}"
           } > .env
 
       # ── 6. Decode keystore ─────────────────────────────────────────────────

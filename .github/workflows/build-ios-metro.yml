@@ -159,12 +159,8 @@ jobs:
           ENV_SENTRY_PROJECT: ${{ secrets.EXPO_SENTRY_PROJECT_NAME }}
           ENV_SENTRY_ORG: ${{ secrets.EXPO_SENTRY_ORGANIZATION }}
           ENV_SENTRY_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          ENV_API_KEY: ${{ secrets.EXPO_PUBLIC_API_ENCRYPTION_KEY }}
-          ENV_SOCKET_URL: ${{ secrets.EXPO_PUBLIC_SOCKET_URL }}
           ENV_API_PIN: ${{ secrets.EXPO_PUBLIC_API_PIN_SHA256 }}
-          ENV_SOCKET_PIN: ${{ secrets.EXPO_PUBLIC_SOCKET_PIN_SHA256 }}
           ENV_API_PIN_EXPIRY: ${{ secrets.EXPO_PUBLIC_API_PIN_EXPIRES_AT }}
-          ENV_SOCKET_PIN_EXPIRY: ${{ secrets.EXPO_PUBLIC_SOCKET_PIN_EXPIRES_AT }}
         run: |
           {
             echo "EXPO_PUBLIC_API_URL=${ENV_API_URL}"
@@ -174,12 +170,8 @@ jobs:
             echo "EXPO_SENTRY_PROJECT_NAME=${ENV_SENTRY_PROJECT}"
             echo "EXPO_SENTRY_ORGANIZATION=${ENV_SENTRY_ORG}"
             echo "SENTRY_AUTH_TOKEN=${ENV_SENTRY_TOKEN}"
-            echo "EXPO_PUBLIC_API_ENCRYPTION_KEY=${ENV_API_KEY}"
-            echo "EXPO_PUBLIC_SOCKET_URL=${ENV_SOCKET_URL}"
             echo "EXPO_PUBLIC_API_PIN_SHA256=${ENV_API_PIN}"
-            echo "EXPO_PUBLIC_SOCKET_PIN_SHA256=${ENV_SOCKET_PIN}"
             echo "EXPO_PUBLIC_API_PIN_EXPIRES_AT=${ENV_API_PIN_EXPIRY}"
-            echo "EXPO_PUBLIC_SOCKET_PIN_EXPIRES_AT=${ENV_SOCKET_PIN_EXPIRY}"
           } > .env
 
       - name: Install EAS CLI
@@ -243,12 +235,8 @@ jobs:
           EXPO_SENTRY_PROJECT_NAME: ${{ secrets.EXPO_SENTRY_PROJECT_NAME }}
           EXPO_SENTRY_ORGANIZATION: ${{ secrets.EXPO_SENTRY_ORGANIZATION }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          EXPO_PUBLIC_API_ENCRYPTION_KEY: ${{ secrets.EXPO_PUBLIC_API_ENCRYPTION_KEY }}
-          EXPO_PUBLIC_SOCKET_URL: ${{ secrets.EXPO_PUBLIC_SOCKET_URL }}
           EXPO_PUBLIC_API_PIN_SHA256: ${{ secrets.EXPO_PUBLIC_API_PIN_SHA256 }}
-          EXPO_PUBLIC_SOCKET_PIN_SHA256: ${{ secrets.EXPO_PUBLIC_SOCKET_PIN_SHA256 }}
           EXPO_PUBLIC_API_PIN_EXPIRES_AT: ${{ secrets.EXPO_PUBLIC_API_PIN_EXPIRES_AT }}
-          EXPO_PUBLIC_SOCKET_PIN_EXPIRES_AT: ${{ secrets.EXPO_PUBLIC_SOCKET_PIN_EXPIRES_AT }}
         run: |
           set -euo pipefail
           node <<'NODE'
@@ -281,12 +269,8 @@ jobs:
             EXPO_SENTRY_PROJECT_NAME: process.env.EXPO_SENTRY_PROJECT_NAME || '',
             EXPO_SENTRY_ORGANIZATION: process.env.EXPO_SENTRY_ORGANIZATION || '',
             SENTRY_AUTH_TOKEN: process.env.SENTRY_AUTH_TOKEN || '',
-            EXPO_PUBLIC_API_ENCRYPTION_KEY: process.env.EXPO_PUBLIC_API_ENCRYPTION_KEY || '',
-            EXPO_PUBLIC_SOCKET_URL: process.env.EXPO_PUBLIC_SOCKET_URL || '',
             EXPO_PUBLIC_API_PIN_SHA256: process.env.EXPO_PUBLIC_API_PIN_SHA256 || '',
-            EXPO_PUBLIC_SOCKET_PIN_SHA256: process.env.EXPO_PUBLIC_SOCKET_PIN_SHA256 || '',
             EXPO_PUBLIC_API_PIN_EXPIRES_AT: process.env.EXPO_PUBLIC_API_PIN_EXPIRES_AT || '',
-            EXPO_PUBLIC_SOCKET_PIN_EXPIRES_AT: process.env.EXPO_PUBLIC_SOCKET_PIN_EXPIRES_AT || '',
           };
           selected.environment = expoEnv;
           eas.build[profile] = selected;
@@ -308,12 +292,8 @@ jobs:
           EXPO_SENTRY_PROJECT_NAME: ${{ secrets.EXPO_SENTRY_PROJECT_NAME }}
           EXPO_SENTRY_ORGANIZATION: ${{ secrets.EXPO_SENTRY_ORGANIZATION }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          EXPO_PUBLIC_API_ENCRYPTION_KEY: ${{ secrets.EXPO_PUBLIC_API_ENCRYPTION_KEY }}
-          EXPO_PUBLIC_SOCKET_URL: ${{ secrets.EXPO_PUBLIC_SOCKET_URL }}
           EXPO_PUBLIC_API_PIN_SHA256: ${{ secrets.EXPO_PUBLIC_API_PIN_SHA256 }}
-          EXPO_PUBLIC_SOCKET_PIN_SHA256: ${{ secrets.EXPO_PUBLIC_SOCKET_PIN_SHA256 }}
           EXPO_PUBLIC_API_PIN_EXPIRES_AT: ${{ secrets.EXPO_PUBLIC_API_PIN_EXPIRES_AT }}
-          EXPO_PUBLIC_SOCKET_PIN_EXPIRES_AT: ${{ secrets.EXPO_PUBLIC_SOCKET_PIN_EXPIRES_AT }}
         run: |
           set -euo pipefail
 

@@ -1,8 +1,16 @@
-name: Build iOS IPA (Release)
+name: Build iOS IPA (Release) [merged]
 
 on:
   workflow_dispatch:
     inputs:
+      app:
+        description: "Which app to build"
+        required: true
+        default: "patient-mobile"
+        type: choice
+        options:
+          - patient-mobile
+          - tc
       branch:
         description: "Branch to build (e.g. develop, main, feat/xyz)"
         required: true
@@ -25,7 +33,7 @@ on:
           - self-hosted
           - github-hosted
       xcode:
-        description: "Preferred Xcode version (must be >= 26.0 for Expo SDK 55)"
+        description: "Preferred Xcode version (patient-mobile only, must be >= 26.0 for Expo SDK 55)"
         required: true
         default: "26.6"
       enable_rnrepo:
@@ -36,15 +44,15 @@ on:
 
 jobs:
   build-ios:
-    name: Build IPA (${{ github.event.inputs.environment || 'development' }})
+    name: Build IPA (${{ github.event.inputs.app }}, ${{ github.event.inputs.environment || 'development' }})
     runs-on: ${{ github.event.inputs.runner == 'self-hosted' && fromJSON('["self-hosted","macOS"]') || fromJSON('["macos-latest"]') }}
     timeout-minutes: 90
 
     steps:
-      - name: Checkout coco-patient-mobile
+      - name: Checkout mobile app source
         uses: actions/checkout@v4
         with:
-          repository: coco-staging/Coco-patient-mobile
+          repository: ${{ github.event.inputs.app == 'tc' && 'coco-staging/coco-mobile' || 'coco-staging/Coco-patient-mobile' }}
           ref: ${{ github.event.inputs.branch }}
           path: app
           token: ${{ secrets.COCO_PAT }}
@@ -64,7 +72,10 @@ jobs:
           restore-keys: |
             rnrepo-ios-${{ runner.os }}-
 
+      # patient-mobile only — TC currently builds against whatever Xcode is
+      # already selected on the runner (no version gate on that side today).
       - name: Select Xcode >= 26
+        if: ${{ github.event.inputs.app != 'tc' }}
         env:
           REQUESTED_XCODE: ${{ github.event.inputs.xcode || '26.6' }}
         run: |
@@ -141,6 +152,41 @@ jobs:
         working-directory: app
         run: yarn install --frozen-lockfile
 
+      # TC only — patient-mobile relies on the eas.json profile patch below
+      # instead of a raw .env file (EAS local build resolves prebuild/env
+      # itself for that app).
+      - name: Write .env file
+        if: ${{ github.event.inputs.app == 'tc' }}
+        working-directory: app
+        env:
+          ENV_API_URL: ${{ secrets.COCO_TC_API_URL }}
+          ENV_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
+          ENV_SENTRY_URL: ${{ secrets.COCO_TC_SENTRY_URL }}
+          ENV_SENTRY_DSN: ${{ secrets.COCO_TC_SENTRY_DSN }}
+          ENV_SENTRY_PROJECT: ${{ secrets.COCO_TC_SENTRY_PROJECT }}
+          ENV_SENTRY_ORG: ${{ secrets.COCO_TC_SENTRY_ORG }}
+          ENV_SENTRY_TOKEN: ${{ secrets.COCO_TC_SENTRY_TOKEN }}
+          ENV_AZURE_CLIENT_ID: ${{ secrets.COCO_TC_AZURE_CLIENT_ID }}
+          ENV_AZURE_TENANT_ID: ${{ secrets.COCO_TC_AZURE_TENANT_ID }}
+          ENV_AZURE_REDIRECT_URI: ${{ secrets.COCO_TC_AZURE_REDIRECT_URI }}
+          ENV_API_PIN: ${{ secrets.COCO_TC_API_PIN_SHA256 }}
+          ENV_API_PIN_EXPIRY: ${{ secrets.COCO_TC_API_PIN_EXPIRES_AT }}
+        run: |
+          {
+            echo "EXPO_PUBLIC_API_URL=${ENV_API_URL}"
+            echo "EXPO_PUBLIC_ENVIRONMENT=${ENV_ENVIRONMENT}"
+            echo "EXPO_PUBLIC_SENTRY_URL=${ENV_SENTRY_URL}"
+            echo "EXPO_SENTRY_URL=${ENV_SENTRY_DSN}"
+            echo "EXPO_SENTRY_PROJECT_NAME=${ENV_SENTRY_PROJECT}"
+            echo "EXPO_SENTRY_ORGANIZATION=${ENV_SENTRY_ORG}"
+            echo "SENTRY_AUTH_TOKEN=${ENV_SENTRY_TOKEN}"
+            echo "EXPO_PUBLIC_AZURE_CLIENT_ID=${ENV_AZURE_CLIENT_ID}"
+            echo "EXPO_PUBLIC_AZURE_TENANT_ID=${ENV_AZURE_TENANT_ID}"
+            echo "EXPO_PUBLIC_AZURE_REDIRECT_URI=${ENV_AZURE_REDIRECT_URI}"
+            echo "EXPO_PUBLIC_API_PIN_SHA256=${ENV_API_PIN}"
+            echo "EXPO_PUBLIC_API_PIN_EXPIRES_AT=${ENV_API_PIN_EXPIRY}"
+          } > .env
+
       - name: Install EAS CLI
         run: npm install -g eas-cli@16.18.1 --silent
 
@@ -168,7 +214,10 @@ jobs:
           echo "Using EAS profile: $PROFILE"
           echo "Using NODE_ENV: $NODE_ENV_VALUE"
 
+      # patient-mobile only — TC's eas.json profiles aren't patched for
+      # runtime parity today.
       - name: Align EAS profile env for runtime parity
+        if: ${{ github.event.inputs.app != 'tc' }}
         working-directory: app
         env:
           PROFILE: ${{ steps.eas_profile.outputs.PROFILE }}
@@ -224,7 +273,10 @@ jobs:
           console.log(`Patched eas.json profile ${profile}: NODE_ENV=${nodeEnv}, environment=${expoEnv}`);
           NODE
 
+      # patient-mobile only — TC does not use a fingerprint/runtime-version
+      # override today.
       - name: Resolve runtime version override
+        if: ${{ github.event.inputs.app != 'tc' }}
         id: runtime_version
         working-directory: app
         env:
@@ -252,14 +304,44 @@ jobs:
           echo "VALUE=$RUNTIME_VERSION" >> "$GITHUB_OUTPUT"
           echo "Resolved runtimeVersion override=$RUNTIME_VERSION"
 
+      # TC only — patient-mobile lets `eas build --local` run prebuild/pod
+      # install itself; TC runs them explicitly first so the native project
+      # (and its Pods cache) persists across runs on the self-hosted runner.
+      - name: Run expo prebuild (iOS)
+        if: ${{ github.event.inputs.app == 'tc' }}
+        working-directory: app
+        run: npx expo prebuild --platform ios --clean --non-interactive
+
+      - name: Cache CocoaPods
+        if: ${{ github.event.inputs.app == 'tc' }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/ios/Pods
+            ~/Library/Caches/CocoaPods
+          key: cocoapods-${{ runner.os }}-${{ hashFiles('app/ios/Podfile.lock') }}
+          restore-keys: |
+            cocoapods-${{ runner.os }}-
+
+      - name: Install CocoaPods dependencies
+        if: ${{ github.event.inputs.app == 'tc' }}
+        working-directory: app/ios
+        run: |
+          set -euo pipefail
+          pod install
+
+      # NOTE: DerivedData is intentionally left in place between runs on
+      # self-hosted runners — wiping it forces a fully clean native compile
+      # every build and was the largest avoidable cost in this job.
       - name: Build iOS IPA with EAS local
         working-directory: app
         env:
+          APP_SELECTOR: ${{ github.event.inputs.app }}
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           EAS_LOCAL_BUILD_SKIP_CLEANUP: 1
           EAS_BUILD_DISABLE_EXPO_DOCTOR_STEP: 1
-          EXPO_NO_DOTENV: 1
-          EXPO_UPDATES_FINGERPRINT_OVERRIDE: ${{ steps.runtime_version.outputs.VALUE }}
+          EXPO_NO_DOTENV: ${{ github.event.inputs.app != 'tc' && '1' || '' }}
+          EXPO_UPDATES_FINGERPRINT_OVERRIDE: ${{ github.event.inputs.app != 'tc' && steps.runtime_version.outputs.VALUE || '' }}
           DISABLE_RNREPO: ${{ github.event.inputs.enable_rnrepo == 'true' && '0' || '1' }}
         run: |
           set -euo pipefail
@@ -269,14 +351,20 @@ jobs:
             exit 1
           fi
 
-          if [ -z "${EXPO_UPDATES_FINGERPRINT_OVERRIDE:-}" ]; then
+          if [ "$APP_SELECTOR" != "tc" ] && [ -z "${EXPO_UPDATES_FINGERPRINT_OVERRIDE:-}" ]; then
             echo "ERROR: EXPO_UPDATES_FINGERPRINT_OVERRIDE is empty" >&2
             exit 1
           fi
 
           mkdir -p "${{ runner.temp }}/ipa"
-          IPA_PATH="${{ runner.temp }}/ipa/coco-patient-${{ steps.eas_profile.outputs.PROFILE }}.ipa"
-          echo "Building with EAS profile=${{ steps.eas_profile.outputs.PROFILE }}"
+          if [ "$APP_SELECTOR" = "tc" ]; then
+            IPA_PATH="${{ runner.temp }}/ipa/coco-tc-${{ steps.eas_profile.outputs.PROFILE }}.ipa"
+            echo "xcode-select path: $(xcode-select -p)"
+            xcodebuild -version
+          else
+            IPA_PATH="${{ runner.temp }}/ipa/coco-patient-${{ steps.eas_profile.outputs.PROFILE }}.ipa"
+            echo "Building with EAS profile=${{ steps.eas_profile.outputs.PROFILE }}"
+          fi
 
           eas build \
             --platform ios \
@@ -300,15 +388,27 @@ jobs:
       - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.COCO_PAT }}
+          APP_SELECTOR: ${{ github.event.inputs.app }}
         run: |
-          TAG="build-ipa-${{ github.event.inputs.environment || 'development' }}-$(date +%Y%m%d)-${SOURCE_SHA:0:7}"
+          if [ "$APP_SELECTOR" = "tc" ]; then
+            REPO="coco-staging/coco-mobile"
+            TAG_PREFIX="tc-build-ipa"
+            TITLE_PREFIX="TC IPA"
+          else
+            REPO="coco-staging/Coco-patient-mobile"
+            TAG_PREFIX="build-ipa"
+            TITLE_PREFIX="IPA"
+          fi
+
+          TAG="${TAG_PREFIX}-${{ github.event.inputs.environment || 'development' }}-$(date +%Y%m%d)-${SOURCE_SHA:0:7}"
           NOTES="Branch: ${{ github.event.inputs.branch }}
           Environment: ${{ github.event.inputs.environment || 'development' }}
           Build flow: EAS local
           EAS profile: ${{ steps.eas_profile.outputs.PROFILE }}
           Commit: ${SOURCE_SHA}"
+
           gh release create "$TAG" \
-            --repo coco-staging/Coco-patient-mobile \
-            --title "IPA ${{ github.event.inputs.environment || 'development' }} $(date '+%Y-%m-%d')" \
+            --repo "$REPO" \
+            --title "${TITLE_PREFIX} ${{ github.event.inputs.environment || 'development' }} $(date '+%Y-%m-%d')" \
             --notes "$NOTES" \
             "${IPA_PATH}"
