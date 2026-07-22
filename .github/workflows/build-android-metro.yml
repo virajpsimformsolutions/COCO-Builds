@@ -73,6 +73,15 @@ jobs:
         working-directory: app
         run: yarn install --frozen-lockfile
 
+      # ── 4.5. Compute fingerprint (before prebuild, matching EAS's own timing) ─
+      - name: Compute fingerprint
+        working-directory: app
+        run: |
+          npx --yes @expo/fingerprint@0.16.7 fingerprint:generate --platform android . > /tmp/fingerprint.json
+          FINGERPRINT_HASH=$(node -e "console.log(require('/tmp/fingerprint.json').hash)")
+          echo "→ Fingerprint: $FINGERPRINT_HASH"
+          echo "FINGERPRINT_HASH=$FINGERPRINT_HASH" >> "$GITHUB_ENV"
+
       # ── 5. Write .env file from secrets ────────────────────────────────────
       - name: Write .env file
         working-directory: app
@@ -203,3 +212,23 @@ jobs:
             --title "Metro APK ${{ github.event.inputs.environment || 'development' }} $(date '+%Y-%m-%d')" \
             --notes "$NOTES" \
             app/android/app/build/outputs/apk/release/*.apk
+
+      # ── 16. Upload to EAS (so this local build shows in the EAS portal) ─────
+      - name: Install eas-cli
+        run: npm install -g eas-cli@16.18.1 --silent
+
+      - name: Upload to EAS
+        working-directory: app
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "ERROR: EXPO_TOKEN secret not set — add the EAS robot-user access token as a repo secret named EXPO_TOKEN." >&2
+            exit 1
+          fi
+          APK_PATH=$(find android/app/build/outputs/apk/release -iname '*.apk' | head -1)
+          if [ -z "$APK_PATH" ]; then
+            echo "ERROR: no .apk found to upload" >&2
+            exit 1
+          fi
+          eas upload --platform android --build-path "$APK_PATH" --fingerprint "$FINGERPRINT_HASH" --non-interactive --json

@@ -72,6 +72,14 @@ jobs:
         working-directory: app
         run: yarn install --frozen-lockfile
 
+      - name: Compute fingerprint
+        working-directory: app
+        run: |
+          npx --yes @expo/fingerprint@0.16.7 fingerprint:generate --platform ios . > /tmp/fingerprint.json
+          FINGERPRINT_HASH=$(node -e "console.log(require('/tmp/fingerprint.json').hash)")
+          echo "→ Fingerprint: $FINGERPRINT_HASH"
+          echo "FINGERPRINT_HASH=$FINGERPRINT_HASH" >> "$GITHUB_ENV"
+
       - name: Write .env file
         working-directory: app
         env:
@@ -193,3 +201,14 @@ jobs:
             --title "TC iOS Metro (${{ github.event.inputs.target || 'simulator' }}) ${{ github.event.inputs.environment || 'development' }} $(date '+%Y-%m-%d')" \
             --notes "$NOTES" \
             "${ARTIFACT_PATH}"
+
+      - name: Upload to EAS
+        working-directory: app
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "ERROR: EXPO_TOKEN secret not set — add the EAS robot-user access token as a repo secret named EXPO_TOKEN." >&2
+            exit 1
+          fi
+          eas upload --platform ios --build-path "$ARTIFACT_PATH" --fingerprint "$FINGERPRINT_HASH" --non-interactive --json
