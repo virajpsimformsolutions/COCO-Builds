@@ -34,14 +34,7 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      # ── 1. Checkout COCO-Builds (workflow repo) ────────────────────────────
-      - name: Checkout COCO-Builds
-        uses: actions/checkout@v4
-        with:
-          repository: virajpsimformsolutions/COCO-Builds
-          token: ${{ secrets.COCO_PAT }}
-
-      # ── 2. Checkout coco-patient-mobile source ─────────────────────────────
+      # ── 1. Checkout coco-patient-mobile source ─────────────────────────────
       - name: Checkout coco-patient-mobile
         uses: actions/checkout@v4
         with:
@@ -50,7 +43,7 @@ jobs:
           path: app
           token: ${{ secrets.COCO_PAT }}
 
-      # ── 3. Setup tools ─────────────────────────────────────────────────────
+      # ── 2. Setup tools ─────────────────────────────────────────────────────
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
@@ -64,7 +57,7 @@ jobs:
           cache: "yarn"
           cache-dependency-path: app/yarn.lock
 
-      # ── 4. Cache Gradle ────────────────────────────────────────────────────
+      # ── 3. Cache Gradle ────────────────────────────────────────────────────
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -75,12 +68,12 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      # ── 5. Install dependencies ────────────────────────────────────────────
+      # ── 4. Install dependencies ────────────────────────────────────────────
       - name: Install dependencies
         working-directory: app
         run: yarn install --frozen-lockfile
 
-      # ── 6. Write .env file from secrets ────────────────────────────────────
+      # ── 5. Write .env file from secrets ────────────────────────────────────
       - name: Write .env file
         working-directory: app
         env:
@@ -114,12 +107,12 @@ jobs:
             echo "EXPO_PUBLIC_SOCKET_PIN_EXPIRES_AT=${ENV_SOCKET_PIN_EXPIRY}"
           } > .env
 
-      # ── 7. Decode keystore ─────────────────────────────────────────────────
+      # ── 6. Decode keystore ─────────────────────────────────────────────────
       - name: Decode keystore
         working-directory: app
         run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.keystore
 
-      # ── 8. Write credentials.json for custom-signing.gradle ────────────────
+      # ── 7. Write credentials.json for custom-signing.gradle ────────────────
       - name: Write credentials.json
         working-directory: app
         env:
@@ -130,14 +123,14 @@ jobs:
           printf '{"android":{"keystore":{"keystorePath":"release.keystore","keystorePassword":"%s","keyAlias":"%s","keyPassword":"%s"}}}' \
             "${KS_PASSWORD}" "${KS_ALIAS}" "${KS_KEY_PASSWORD}" > credentials.json
 
-      # ── 9. Generate native Android project ──────────────────────────────────
+      # ── 8. Generate native Android project ──────────────────────────────────
       - name: Run expo prebuild
         working-directory: app
         env:
           DISABLE_RNREPO: ${{ github.event.inputs.enable_rnrepo == 'true' && '0' || '1' }}
         run: npx expo prebuild --platform android --clean
 
-      # ── 10. Fix DocuSign AAR dependency ─────────────────────────────────────
+      # ── 9. Fix DocuSign AAR dependency ─────────────────────────────────────
       - name: Fix DocuSign AAR dependency
         working-directory: app
         run: |
@@ -148,7 +141,7 @@ jobs:
             sed -i '/flatDir.*libs/d' "$ROOT_BUILD_GRADLE"
           fi
 
-      # ── 11. Patch JVM target alignment ─────────────────────────────────────
+      # ── 10. Patch JVM target alignment ─────────────────────────────────────
       - name: Patch JVM target alignment
         working-directory: app
         run: |
@@ -177,7 +170,7 @@ jobs:
           }
           GRADLEOF
 
-      # ── 12. Add stripped DocuSign AAR to app build ──────────────────────────
+      # ── 11. Add stripped DocuSign AAR to app build ──────────────────────────
       - name: Add stripped DocuSign AAR to app build
         working-directory: app
         run: |
@@ -185,13 +178,13 @@ jobs:
           echo '' >> android/app/build.gradle
           echo "project.dependencies.add('implementation', files('$DS_AAR_PATH'))" >> android/app/build.gradle
 
-      # ── 13. Bump JVM metaspace ──────────────────────────────────────────────
+      # ── 12. Bump JVM metaspace ──────────────────────────────────────────────
       - name: Bump JVM metaspace
         working-directory: app
         run: |
           sed -i 's/org\.gradle\.jvmargs=-Xmx[0-9]*m -XX:MaxMetaspaceSize=[0-9]*m/org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m/' android/gradle.properties
 
-      # ── 14. Build dev-client APK (arm64 only for speed) ────────────────────
+      # ── 13. Build dev-client APK (arm64 only for speed) ────────────────────
       # Same shape as coco-patient-mobile's own "android-metro-dev" GH Actions
       # job — a release-configured build with expo-dev-client so it can load
       # from the Metro bundler for fast local JS iteration.
@@ -199,12 +192,12 @@ jobs:
         working-directory: app/android
         run: ./gradlew assembleRelease --parallel --build-cache -PreactNativeArchitectures=arm64-v8a -x lint
 
-      # ── 15. Get source commit SHA ──────────────────────────────────────────
+      # ── 14. Get source commit SHA ──────────────────────────────────────────
       - name: Get source commit SHA
         working-directory: app
         run: echo "SOURCE_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
 
-      # ── 16. Create tag + GitHub Release ────────────────────────────────────
+      # ── 15. Create tag + GitHub Release ────────────────────────────────────
       - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.COCO_PAT }}

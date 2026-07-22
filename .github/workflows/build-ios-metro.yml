@@ -49,12 +49,6 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - name: Checkout COCO-Builds
-        uses: actions/checkout@v4
-        with:
-          repository: virajpsimformsolutions/COCO-Builds
-          token: ${{ secrets.COCO_PAT }}
-
       - name: Checkout coco-patient-mobile
         uses: actions/checkout@v4
         with:
@@ -189,7 +183,7 @@ jobs:
           } > .env
 
       - name: Install EAS CLI
-        run: npm install -g eas-cli@latest --silent
+        run: npm install -g eas-cli@16.18.1 --silent
 
       - name: Resolve EAS profile
         id: eas_profile

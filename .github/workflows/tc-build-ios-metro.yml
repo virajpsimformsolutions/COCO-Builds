@@ -45,12 +45,6 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - name: Checkout COCO-Builds
-        uses: actions/checkout@v4
-        with:
-          repository: virajpsimformsolutions/COCO-Builds
-          token: ${{ secrets.COCO_PAT }}
-
       - name: Checkout coco-mobile
         uses: actions/checkout@v4
         with:
@@ -118,7 +112,7 @@ jobs:
           } > .env
 
       - name: Install EAS CLI
-        run: npm install -g eas-cli@latest --silent
+        run: npm install -g eas-cli@16.18.1 --silent
 
       - name: Resolve EAS profile
         id: eas_profile
@@ -157,6 +151,7 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           EAS_LOCAL_BUILD_SKIP_CLEANUP: 1
+          EAS_BUILD_DISABLE_EXPO_DOCTOR_STEP: 1
           DISABLE_RNREPO: ${{ github.event.inputs.enable_rnrepo == 'true' && '0' || '1' }}
         run: |
           set -euo pipefail
