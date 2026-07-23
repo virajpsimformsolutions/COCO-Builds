@@ -1,0 +1,77 @@
+name: "[TC] EAS OTA Update"
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to publish (e.g. develop, main, feat/xyz)'
+        required: true
+        default: 'develop'
+      environment:
+        description: 'Update channel/environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - development
+          - preview
+          - production
+
+jobs:
+  ota-update:
+    name: TC OTA Update (${{ github.event.inputs.environment || 'production' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # ── 1. Checkout coco-mobile source ─────────────────────────────────────
+      - name: Checkout coco-mobile
+        uses: actions/checkout@v4
+        with:
+          repository: coco-staging/coco-mobile
+          ref: ${{ github.event.inputs.branch }}
+          path: app
+          token: ${{ secrets.COCO_PAT }}
+
+      # ── 2. Setup Node.js ─────────────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.4'
+          cache: 'yarn'
+          cache-dependency-path: app/yarn.lock
+
+      # ── 3. Install dependencies ─────────────────────────────────────────────
+      - name: Install dependencies
+        working-directory: app
+        run: yarn install --frozen-lockfile
+
+      # ── 4. Install eas-cli ───────────────────────────────────────────────────
+      - name: Install eas-cli
+        run: npm install -g eas-cli@16.18.1 --silent
+
+      # ── 5. Publish OTA update ────────────────────────────────────────────────
+      # Uses the app's own ready-made yarn ota:{dev,preview,prod} scripts.
+      # `--environment` pulls the matching EAS-hosted env vars remotely —
+      # `eas update` is a cloud-connected command (unlike `eas build --local`),
+      # so it doesn't have the local env-injection gap we hit on the AAB build
+      # pipeline; no .env file needs to be written here.
+      - name: Publish OTA update
+        working-directory: app
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          UPDATE_ENV: ${{ github.event.inputs.environment || 'production' }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "ERROR: EXPO_TOKEN secret not set — add the EAS robot-user access token as a repo secret named EXPO_TOKEN." >&2
+            exit 1
+          fi
+
+          case "$UPDATE_ENV" in
+            development) SCRIPT="ota:dev" ;;
+            preview)     SCRIPT="ota:preview" ;;
+            production)  SCRIPT="ota:prod" ;;
+            *) echo "ERROR: unknown environment '$UPDATE_ENV'" >&2; exit 1 ;;
+          esac
+
+          yarn "$SCRIPT" --non-interactive
