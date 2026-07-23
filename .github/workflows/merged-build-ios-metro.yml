@@ -277,6 +277,7 @@ jobs:
       # this is just a best-effort extra registration. Skipped, not failed, if
       # the account's monthly local-builds quota is exhausted.
       - name: Upload to EAS
+        working-directory: app
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
@@ -285,7 +286,7 @@ jobs:
             exit 1
           fi
           set +e
-          OUTPUT=$(eas upload --platform ios --build-path "${ARTIFACT_PATH}" --non-interactive --json 2>&1)
+          OUTPUT=$(eas upload --platform ios --build-path "${ARTIFACT_PATH#app/}" --non-interactive --json 2>&1)
           STATUS=$?
           echo "$OUTPUT"
           if [ $STATUS -ne 0 ]; then
