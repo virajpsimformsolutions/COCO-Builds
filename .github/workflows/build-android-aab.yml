@@ -147,8 +147,32 @@ jobs:
             --title "AAB ${{ github.event.inputs.environment || 'production' }} $(date '+%Y-%m-%d')" \
             --notes "$NOTES" \
             app/app-release.aab
-      # `eas build --local` already registers the build with EAS itself
-      # (confirmed on a real run: "Uploading your app archive to EAS...
-      # Uploaded to EAS"), so no separate `eas upload` step is needed here —
-      # calling it again hits the account's local-builds quota / duplicate
-      # registration and fails outright.
+
+      # ── 10. Upload to EAS (best-effort) ─────────────────────────────────────
+      # `eas build --local` already registers the build with EAS itself, so
+      # this is just a best-effort extra registration. No --fingerprint flag —
+      # a separately-computed fingerprint doesn't match what the build itself
+      # resolved internally (confirmed on a real run), so passing one would
+      # mistag the upload rather than help it. Skipped, not failed, if the
+      # account's monthly local-builds quota is exhausted.
+      - name: Upload to EAS
+        working-directory: app
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "ERROR: EXPO_TOKEN secret not set — add the EAS robot-user access token as a repo secret named EXPO_TOKEN." >&2
+            exit 1
+          fi
+          set +e
+          OUTPUT=$(eas upload --platform android --build-path "app-release.aab" --non-interactive --json 2>&1)
+          STATUS=$?
+          echo "$OUTPUT"
+          if [ $STATUS -ne 0 ]; then
+            if echo "$OUTPUT" | grep -qiE "local builds|quota|free plan"; then
+              echo "⚠️  Skipping: eas build --local already registered this build with EAS; this extra upload hit the account's local-builds limit for the month, which is expected, not a failure."
+              exit 0
+            fi
+            echo "ERROR: eas upload failed for a reason unrelated to the known quota limit — see output above." >&2
+            exit $STATUS
+          fi
