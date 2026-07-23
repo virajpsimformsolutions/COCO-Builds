@@ -63,19 +63,6 @@ jobs:
         working-directory: app
         run: yarn install --frozen-lockfile
 
-      # ── 4.5. Compute fingerprint (before prebuild, matching EAS's own timing) ─
-      # EAS computes a build's fingerprint from source, before prebuild runs —
-      # ios/ and android/ don't exist yet at that point. Compute it here at the
-      # same point so `eas upload`'s --fingerprint matches what EAS itself
-      # would have computed, keeping runtime-version/OTA-update matching correct.
-      - name: Compute fingerprint
-        working-directory: app
-        run: |
-          npx --yes @expo/fingerprint@0.16.7 fingerprint:generate --platform android . > /tmp/fingerprint.json
-          FINGERPRINT_HASH=$(node -e "console.log(require('/tmp/fingerprint.json').hash)")
-          echo "→ Fingerprint: $FINGERPRINT_HASH"
-          echo "FINGERPRINT_HASH=$FINGERPRINT_HASH" >> "$GITHUB_ENV"
-
       # ── 5. Write .env.<environment> file from secrets ──────────────────────
       # Patient app's yarn eas:local scripts source .env.<profile> explicitly
       # (eas build --local doesn't reliably pull EAS-hosted environment vars
@@ -164,18 +151,8 @@ jobs:
             --title "TC AAB ${{ github.event.inputs.environment || 'production' }} $(date '+%Y-%m-%d')" \
             --notes "$NOTES" \
             app/app-release.aab
-
-      # ── 10. Push the build to EAS (Uploaded builds quota) ──────────────────
-      # `eas build --local` should already register the build with EAS, but
-      # this is kept as a safety net until that's confirmed on a real run —
-      # remove if it turns out to be a redundant duplicate registration.
-      - name: Upload to EAS
-        working-directory: app
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: |
-          if [ -z "$EXPO_TOKEN" ]; then
-            echo "ERROR: EXPO_TOKEN secret not set — add the EAS robot-user access token as a repo secret named EXPO_TOKEN." >&2
-            exit 1
-          fi
-          eas upload --platform android --build-path "app-release.aab" --fingerprint "$FINGERPRINT_HASH" --non-interactive --json
+      # `eas build --local` already registers the build with EAS itself
+      # (confirmed on a real run: "Uploading your app archive to EAS...
+      # Uploaded to EAS"), so no separate `eas upload` step is needed here —
+      # calling it again hits the account's local-builds quota / duplicate
+      # registration and fails outright.
