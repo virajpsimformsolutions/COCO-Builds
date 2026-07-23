@@ -76,7 +76,12 @@ jobs:
           echo "→ Fingerprint: $FINGERPRINT_HASH"
           echo "FINGERPRINT_HASH=$FINGERPRINT_HASH" >> "$GITHUB_ENV"
 
-      # ── 5. Write .env file from secrets ────────────────────────────────────
+      # ── 5. Write .env.<environment> file from secrets ──────────────────────
+      # Patient app's yarn eas:local scripts source .env.<profile> explicitly
+      # (eas build --local doesn't reliably pull EAS-hosted environment vars
+      # on its own — expo/eas-cli#2195). TC's scripts don't wrap with the same
+      # loader, so we source this file ourselves before invoking eas-cli below
+      # to close that same gap here.
       - name: Write .env file
         working-directory: app
         env:
@@ -92,6 +97,7 @@ jobs:
           ENV_AZURE_REDIRECT_URI: ${{ secrets.COCO_TC_AZURE_REDIRECT_URI }}
           ENV_API_PIN: ${{ secrets.COCO_TC_API_PIN_SHA256 }}
           ENV_API_PIN_EXPIRY: ${{ secrets.COCO_TC_API_PIN_EXPIRES_AT }}
+          ENV_NAME: ${{ github.event.inputs.environment || 'production' }}
         run: |
           {
             echo "EXPO_PUBLIC_API_URL=${ENV_API_URL}"
@@ -106,75 +112,45 @@ jobs:
             echo "EXPO_PUBLIC_AZURE_REDIRECT_URI=${ENV_AZURE_REDIRECT_URI}"
             echo "EXPO_PUBLIC_API_PIN_SHA256=${ENV_API_PIN}"
             echo "EXPO_PUBLIC_API_PIN_EXPIRES_AT=${ENV_API_PIN_EXPIRY}"
-          } > .env
+          } > ".env.${ENV_NAME}"
 
-      # ── 6. Decode keystore ─────────────────────────────────────────────────
-      - name: Decode keystore
-        working-directory: app
-        run: echo "${{ secrets.COCO_TC_KEYSTORE_BASE64 }}" | base64 -d > release.keystore
+      # ── 6. Install eas-cli ──────────────────────────────────────────────────
+      - name: Install eas-cli
+        run: npm install -g eas-cli@16.18.1 --silent
 
-      # ── 7. Write credentials.json for custom-signing.gradle ────────────────
-      - name: Write credentials.json
+      # ── 7. Build AAB via EAS local build ────────────────────────────────────
+      # Signing is handled by EAS itself (eas.json → credentialsSource: remote
+      # + --freeze-credentials pulls the registered upload keystore from EAS'
+      # own credential store — no keystore secret / credentials.json needed).
+      # Replaces the old manual decode-keystore / write-credentials.json /
+      # expo-prebuild / JVM-target-patch / Metaspace-bump / gradlew steps.
+      - name: Build AAB
         working-directory: app
         env:
-          KS_PASSWORD: ${{ secrets.COCO_TC_KEYSTORE_PASSWORD }}
-          KS_ALIAS: ${{ secrets.COCO_TC_KEY_ALIAS }}
-          KS_KEY_PASSWORD: ${{ secrets.COCO_TC_KEY_PASSWORD }}
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          BUILD_ENV: ${{ github.event.inputs.environment || 'production' }}
         run: |
-          printf '{"android":{"keystore":{"keystorePath":"release.keystore","keystorePassword":"%s","keyAlias":"%s","keyPassword":"%s"}}}' \
-            "${KS_PASSWORD}" "${KS_ALIAS}" "${KS_KEY_PASSWORD}" > credentials.json
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "ERROR: EXPO_TOKEN secret not set — add the EAS robot-user access token as a repo secret named EXPO_TOKEN." >&2
+            exit 1
+          fi
 
-      # ── 8. Generate native Android project ──────────────────────────────────
-      - name: Run expo prebuild
-        working-directory: app
-        run: npx expo prebuild --platform android --clean
+          case "$BUILD_ENV" in
+            development) SCRIPT="android:eas:local:dev" ;;
+            preview)     SCRIPT="android:eas:local:preview" ;;
+            production)  SCRIPT="android:eas:local:prod" ;;
+            *) echo "ERROR: unknown environment '$BUILD_ENV'" >&2; exit 1 ;;
+          esac
 
-      # ── 9. Patch JVM target alignment ─────────────────────────────────────
-      - name: Patch JVM target alignment
-        working-directory: app
-        run: |
-          cat >> android/build.gradle << 'GRADLEOF'
+          set -a; source ".env.${BUILD_ENV}"; set +a
+          yarn "$SCRIPT" --output app-release.aab
 
-          gradle.projectsEvaluated {
-            subprojects { sub ->
-              sub.plugins.withId('com.android.application') {
-                sub.android.compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_17
-                  targetCompatibility JavaVersion.VERSION_17
-                }
-              }
-              sub.plugins.withId('com.android.library') {
-                sub.android.compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_17
-                  targetCompatibility JavaVersion.VERSION_17
-                }
-              }
-              sub.tasks.configureEach { task ->
-                if (task.class.name.contains('KotlinCompile')) {
-                  task.kotlinOptions.jvmTarget = '17'
-                }
-              }
-            }
-          }
-          GRADLEOF
-
-      # ── 10. Bump JVM metaspace ──────────────────────────────────────────────
-      - name: Bump JVM metaspace
-        working-directory: app
-        run: |
-          sed -i 's/org\.gradle\.jvmargs=-Xmx[0-9]*m -XX:MaxMetaspaceSize=[0-9]*m/org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m/' android/gradle.properties
-
-      # ── 11. Build release AAB (all archs for Play Store) ──────────────────
-      - name: Build AAB
-        working-directory: app/android
-        run: ./gradlew bundleRelease --parallel --build-cache -x lint
-
-      # ── 12. Get source commit SHA ──────────────────────────────────────────
+      # ── 8. Get source commit SHA ────────────────────────────────────────────
       - name: Get source commit SHA
         working-directory: app
         run: echo "SOURCE_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
 
-      # ── 13. Create tag + GitHub Release ────────────────────────────────────
+      # ── 9. Create tag + GitHub Release ──────────────────────────────────────
       - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.COCO_PAT }}
@@ -187,16 +163,12 @@ jobs:
             --repo coco-staging/coco-mobile \
             --title "TC AAB ${{ github.event.inputs.environment || 'production' }} $(date '+%Y-%m-%d')" \
             --notes "$NOTES" \
-            app/android/app/build/outputs/bundle/release/*.aab
+            app/app-release.aab
 
-      # ── 14. Push the build to EAS (Uploaded builds quota) ──────────────────
-      # Registers this externally-built AAB with EAS so it shows up in the
-      # dashboard / is eligible for `eas submit`, even though it wasn't built
-      # by EAS Build itself. Needs an EXPO_TOKEN secret (an EAS robot-user
-      # access token — Project settings → Access tokens → Robot users).
-      - name: Install eas-cli
-        run: npm install -g eas-cli@16.18.1 --silent
-
+      # ── 10. Push the build to EAS (Uploaded builds quota) ──────────────────
+      # `eas build --local` should already register the build with EAS, but
+      # this is kept as a safety net until that's confirmed on a real run —
+      # remove if it turns out to be a redundant duplicate registration.
       - name: Upload to EAS
         working-directory: app
         env:
@@ -206,9 +178,4 @@ jobs:
             echo "ERROR: EXPO_TOKEN secret not set — add the EAS robot-user access token as a repo secret named EXPO_TOKEN." >&2
             exit 1
           fi
-          AAB_PATH=$(find android/app/build/outputs/bundle/release -iname '*.aab' | head -1)
-          if [ -z "$AAB_PATH" ]; then
-            echo "ERROR: no .aab found to upload" >&2
-            exit 1
-          fi
-          eas upload --platform android --build-path "$AAB_PATH" --fingerprint "$FINGERPRINT_HASH" --non-interactive --json
+          eas upload --platform android --build-path "app-release.aab" --fingerprint "$FINGERPRINT_HASH" --non-interactive --json
