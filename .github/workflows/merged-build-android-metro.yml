@@ -1,0 +1,210 @@
+name: Build Android Metro (Dev Client) [merged]
+
+# Backup path for when the EAS free-tier quota/concurrency is exhausted.
+# Produces a dev-client APK via each app's own yarn android:eas:local:metro:simulator
+# script (eas build --profile=metro-dev --local ...) instead of a manual
+# prebuild/gradlew pipeline.
+#
+# metro-dev is a fixed profile (channel + EAS environment always
+# "development" — see eas.json) — there is no per-environment variant for
+# dev-client builds, so this workflow has no "environment" input.
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: "Which app to build"
+        required: true
+        default: "patient-mobile"
+        type: choice
+        options:
+          - patient-mobile
+          - tc
+      branch:
+        description: "Branch to build (e.g. develop, main, feat/xyz)"
+        required: true
+        default: "develop"
+      enable_rnrepo:
+        description: "Use RNRepo prebuilt native artifacts"
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  build-android:
+    name: Build Android Metro APK (${{ github.event.inputs.app }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      # ── 1. Checkout mobile app source ───────────────────────────────────────
+      - name: Checkout mobile app source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.app == 'tc' && 'coco-staging/coco-mobile' || 'coco-staging/Coco-patient-mobile' }}
+          ref: ${{ github.event.inputs.branch }}
+          path: app
+          token: ${{ secrets.COCO_PAT }}
+
+      # ── 2. Setup tools ─────────────────────────────────────────────────────
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.19.4"
+          cache: "yarn"
+          cache-dependency-path: app/yarn.lock
+
+      # ── 3. Cache Gradle ────────────────────────────────────────────────────
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('app/android/gradle/wrapper/gradle-wrapper.properties', 'app/yarn.lock') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # ── 4. Install dependencies ────────────────────────────────────────────
+      # postinstall / eas-build-post-install already strips the DocuSign AAR
+      # on patient-mobile — no manual patch step needed.
+      - name: Install dependencies
+        working-directory: app
+        run: yarn install --frozen-lockfile
+
+      # ── 5. Write .env.development file from secrets ─────────────────────────
+      # metro-dev is always the "development" EAS environment/channel, so this
+      # is always .env.development. Neither app's metro yarn script sources it
+      # automatically (unlike android:eas:local:dev's set-dev-env.sh wrapper),
+      # so we source it ourselves in the build step below.
+      - name: Write .env file
+        working-directory: app
+        env:
+          APP_SELECTOR: ${{ github.event.inputs.app }}
+          ENV_API_URL: ${{ github.event.inputs.app == 'tc' && secrets.COCO_TC_API_URL || secrets.EXPO_PUBLIC_API_URL }}
+          ENV_SENTRY_URL: ${{ github.event.inputs.app == 'tc' && secrets.COCO_TC_SENTRY_URL || secrets.EXPO_PUBLIC_SENTRY_URL }}
+          ENV_SENTRY_DSN: ${{ github.event.inputs.app == 'tc' && secrets.COCO_TC_SENTRY_DSN || secrets.EXPO_SENTRY_URL }}
+          ENV_SENTRY_PROJECT: ${{ github.event.inputs.app == 'tc' && secrets.COCO_TC_SENTRY_PROJECT || secrets.EXPO_SENTRY_PROJECT_NAME }}
+          ENV_SENTRY_ORG: ${{ github.event.inputs.app == 'tc' && secrets.COCO_TC_SENTRY_ORG || secrets.EXPO_SENTRY_ORGANIZATION }}
+          ENV_SENTRY_TOKEN: ${{ github.event.inputs.app == 'tc' && secrets.COCO_TC_SENTRY_TOKEN || secrets.SENTRY_AUTH_TOKEN }}
+          ENV_API_PIN: ${{ github.event.inputs.app == 'tc' && secrets.COCO_TC_API_PIN_SHA256 || secrets.EXPO_PUBLIC_API_PIN_SHA256 }}
+          ENV_API_PIN_EXPIRY: ${{ github.event.inputs.app == 'tc' && secrets.COCO_TC_API_PIN_EXPIRES_AT || secrets.EXPO_PUBLIC_API_PIN_EXPIRES_AT }}
+          ENV_AZURE_CLIENT_ID: ${{ secrets.COCO_TC_AZURE_CLIENT_ID }}
+          ENV_AZURE_TENANT_ID: ${{ secrets.COCO_TC_AZURE_TENANT_ID }}
+          ENV_AZURE_REDIRECT_URI: ${{ secrets.COCO_TC_AZURE_REDIRECT_URI }}
+        run: |
+          if [ "$APP_SELECTOR" = "tc" ]; then
+            {
+              echo "EXPO_PUBLIC_API_URL=${ENV_API_URL}"
+              echo "EXPO_PUBLIC_ENVIRONMENT=development"
+              echo "EXPO_PUBLIC_SENTRY_URL=${ENV_SENTRY_URL}"
+              echo "EXPO_SENTRY_URL=${ENV_SENTRY_DSN}"
+              echo "EXPO_SENTRY_PROJECT_NAME=${ENV_SENTRY_PROJECT}"
+              echo "EXPO_SENTRY_ORGANIZATION=${ENV_SENTRY_ORG}"
+              echo "SENTRY_AUTH_TOKEN=${ENV_SENTRY_TOKEN}"
+              echo "EXPO_PUBLIC_AZURE_CLIENT_ID=${ENV_AZURE_CLIENT_ID}"
+              echo "EXPO_PUBLIC_AZURE_TENANT_ID=${ENV_AZURE_TENANT_ID}"
+              echo "EXPO_PUBLIC_AZURE_REDIRECT_URI=${ENV_AZURE_REDIRECT_URI}"
+              echo "EXPO_PUBLIC_API_PIN_SHA256=${ENV_API_PIN}"
+              echo "EXPO_PUBLIC_API_PIN_EXPIRES_AT=${ENV_API_PIN_EXPIRY}"
+            } > .env.development
+          else
+            {
+              echo "EXPO_PUBLIC_API_URL=${ENV_API_URL}"
+              echo "EXPO_PUBLIC_ENVIRONMENT=development"
+              echo "EXPO_PUBLIC_SENTRY_URL=${ENV_SENTRY_URL}"
+              echo "EXPO_SENTRY_URL=${ENV_SENTRY_DSN}"
+              echo "EXPO_SENTRY_PROJECT_NAME=${ENV_SENTRY_PROJECT}"
+              echo "EXPO_SENTRY_ORGANIZATION=${ENV_SENTRY_ORG}"
+              echo "SENTRY_AUTH_TOKEN=${ENV_SENTRY_TOKEN}"
+              echo "EXPO_PUBLIC_API_PIN_SHA256=${ENV_API_PIN}"
+              echo "EXPO_PUBLIC_API_PIN_EXPIRES_AT=${ENV_API_PIN_EXPIRY}"
+            } > .env.development
+          fi
+
+      # ── 6. Install eas-cli ───────────────────────────────────────────────────
+      - name: Install eas-cli
+        run: npm install -g eas-cli@16.18.1 --silent
+
+      # ── 7. Build dev-client APK via EAS local build ─────────────────────────
+      # Signing comes from EAS's own credential store (credentialsSource:
+      # remote + --freeze-credentials in the yarn script) — same as the AAB
+      # pipeline. Replaces the old manual decode-keystore / credentials.json /
+      # expo-prebuild / DocuSign-AAR-patch / JVM-target-patch / Metaspace-bump
+      # / gradlew steps.
+      - name: Build APK
+        working-directory: app
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          DISABLE_RNREPO: ${{ github.event.inputs.enable_rnrepo == 'true' && '0' || '1' }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "ERROR: EXPO_TOKEN secret not set — add the EAS robot-user access token as a repo secret named EXPO_TOKEN." >&2
+            exit 1
+          fi
+          set -a; source ".env.development"; set +a
+          yarn android:eas:local:metro:simulator --output app-metro.apk
+
+      # ── 8. Get source commit SHA ────────────────────────────────────────────
+      - name: Get source commit SHA
+        working-directory: app
+        run: echo "SOURCE_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+      # ── 9. Create tag + GitHub Release ──────────────────────────────────────
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.COCO_PAT }}
+          APP_SELECTOR: ${{ github.event.inputs.app }}
+        run: |
+          if [ "$APP_SELECTOR" = "tc" ]; then
+            REPO="coco-staging/coco-mobile"
+            TAG_PREFIX="tc-build-metro"
+            TITLE_PREFIX="TC Metro APK"
+          else
+            REPO="coco-staging/Coco-patient-mobile"
+            TAG_PREFIX="build-metro"
+            TITLE_PREFIX="Metro APK"
+          fi
+
+          TAG="${TAG_PREFIX}-development-$(date +%Y%m%d)-${SOURCE_SHA:0:7}"
+          NOTES="Branch: ${{ github.event.inputs.branch }}
+          Environment: development
+          Commit: ${SOURCE_SHA}"
+
+          gh release create "$TAG" \
+            --repo "$REPO" \
+            --title "${TITLE_PREFIX} development $(date '+%Y-%m-%d')" \
+            --notes "$NOTES" \
+            app/app-metro.apk
+
+      # ── 10. Upload to EAS (best-effort) ─────────────────────────────────────
+      # `eas build --local` already registers the build with EAS itself, so
+      # this is just a best-effort extra registration. Skipped, not failed, if
+      # the account's monthly local-builds quota is exhausted.
+      - name: Upload to EAS
+        working-directory: app
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "ERROR: EXPO_TOKEN secret not set — add the EAS robot-user access token as a repo secret named EXPO_TOKEN." >&2
+            exit 1
+          fi
+          set +e
+          OUTPUT=$(eas upload --platform android --build-path "app-metro.apk" --non-interactive --json 2>&1)
+          STATUS=$?
+          echo "$OUTPUT"
+          if [ $STATUS -ne 0 ]; then
+            if echo "$OUTPUT" | grep -qiE "local builds|quota|free plan"; then
+              echo "⚠️  Skipping: eas build --local already registered this build with EAS; this extra upload hit the account's local-builds limit for the month, which is expected, not a failure."
+              exit 0
+            fi
+            echo "ERROR: eas upload failed for a reason unrelated to the known quota limit — see output above." >&2
+            exit $STATUS
+          fi
