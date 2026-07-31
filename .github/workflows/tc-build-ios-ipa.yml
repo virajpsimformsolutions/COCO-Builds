@@ -123,6 +123,34 @@ jobs:
           echo "PROFILE=$PROFILE" >> "$GITHUB_OUTPUT"
           echo "Using EAS profile: $PROFILE"
 
+      # ── Write Firebase iOS config ───────────────────────────────────────────
+      # GOOGLE_SERVICE_INFO_PLIST is a file-type EAS env var, but neither raw
+      # `expo prebuild` nor `eas build --local` reliably resolve file-type EAS
+      # env vars (expo/eas-cli#2876, #1253, #3184). Decode from a base64
+      # secret (one per environment — each EAS environment has its own
+      # Firebase project) and export the path directly so app.config.ts
+      # (process.env.GOOGLE_SERVICE_INFO_PLIST) picks it up regardless.
+      - name: Write Firebase iOS config
+        working-directory: app
+        env:
+          ENV_NAME: ${{ github.event.inputs.environment || 'production' }}
+          SECRET_DEVELOPMENT: ${{ secrets.COCO_TC_GOOGLE_SERVICE_INFO_PLIST_BASE64_DEVELOPMENT }}
+          SECRET_PREVIEW: ${{ secrets.COCO_TC_GOOGLE_SERVICE_INFO_PLIST_BASE64_PREVIEW }}
+          SECRET_PRODUCTION: ${{ secrets.COCO_TC_GOOGLE_SERVICE_INFO_PLIST_BASE64_PRODUCTION }}
+        run: |
+          case "$ENV_NAME" in
+            development) VALUE="$SECRET_DEVELOPMENT" ;;
+            preview) VALUE="$SECRET_PREVIEW" ;;
+            production) VALUE="$SECRET_PRODUCTION" ;;
+            *) echo "ERROR: unknown environment '$ENV_NAME'" >&2; exit 1 ;;
+          esac
+          if [ -z "$VALUE" ]; then
+            echo "ERROR: COCO_TC_GOOGLE_SERVICE_INFO_PLIST_BASE64_${ENV_NAME^^} secret not set." >&2
+            exit 1
+          fi
+          echo "$VALUE" | base64 -d > GoogleService-Info.plist
+          echo "GOOGLE_SERVICE_INFO_PLIST=$(pwd)/GoogleService-Info.plist" >> "$GITHUB_ENV"
+
       # ── 7. Generate iOS project for local build ────────────────────────────
       - name: Run expo prebuild (iOS)
         working-directory: app

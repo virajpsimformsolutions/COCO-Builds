@@ -132,6 +132,25 @@ jobs:
       - name: Install eas-cli
         run: npm install -g eas-cli@16.18.1 --silent
 
+      # ── Write Firebase Android config (tc only) ─────────────────────────────
+      # GOOGLE_SERVICES_JSON is a file-type EAS env var, but `eas build --local`
+      # doesn't reliably resolve file-type env vars (expo/eas-cli#2876, #1253,
+      # #3184). Decode from a base64 secret and export the path directly so
+      # app.config.ts (process.env.GOOGLE_SERVICES_JSON) picks it up
+      # regardless. patient-mobile has its own Firebase handling, untouched.
+      - name: Write Firebase Android config
+        if: ${{ github.event.inputs.app == 'tc' }}
+        working-directory: app
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.COCO_TC_GOOGLE_SERVICES_JSON_BASE64_DEVELOPMENT }}
+        run: |
+          if [ -z "$GOOGLE_SERVICES_JSON_BASE64" ]; then
+            echo "ERROR: COCO_TC_GOOGLE_SERVICES_JSON_BASE64_DEVELOPMENT secret not set." >&2
+            exit 1
+          fi
+          echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 -d > google-services.json
+          echo "GOOGLE_SERVICES_JSON=$(pwd)/google-services.json" >> "$GITHUB_ENV"
+
       # ── 7. Build dev-client APK via EAS local build ─────────────────────────
       # Signing comes from EAS's own credential store (credentialsSource:
       # remote + --freeze-credentials in the yarn script) — same as the AAB

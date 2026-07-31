@@ -105,6 +105,35 @@ jobs:
       - name: Install eas-cli
         run: npm install -g eas-cli@16.18.1 --silent
 
+      # ── Write Firebase Android config ───────────────────────────────────────
+      # GOOGLE_SERVICES_JSON is a file-type EAS env var, but `eas build --local`
+      # doesn't reliably resolve file-type env vars (expo/eas-cli#2876, #1253,
+      # #3184 — same class of gap as the .env-file workaround above). Decode
+      # from a base64 secret (one per environment — each EAS environment has
+      # its own Firebase project) and export the path directly so
+      # app.config.ts (process.env.GOOGLE_SERVICES_JSON) picks it up
+      # regardless.
+      - name: Write Firebase Android config
+        working-directory: app
+        env:
+          ENV_NAME: ${{ github.event.inputs.environment || 'production' }}
+          SECRET_DEVELOPMENT: ${{ secrets.COCO_TC_GOOGLE_SERVICES_JSON_BASE64_DEVELOPMENT }}
+          SECRET_PREVIEW: ${{ secrets.COCO_TC_GOOGLE_SERVICES_JSON_BASE64_PREVIEW }}
+          SECRET_PRODUCTION: ${{ secrets.COCO_TC_GOOGLE_SERVICES_JSON_BASE64_PRODUCTION }}
+        run: |
+          case "$ENV_NAME" in
+            development) VALUE="$SECRET_DEVELOPMENT" ;;
+            preview) VALUE="$SECRET_PREVIEW" ;;
+            production) VALUE="$SECRET_PRODUCTION" ;;
+            *) echo "ERROR: unknown environment '$ENV_NAME'" >&2; exit 1 ;;
+          esac
+          if [ -z "$VALUE" ]; then
+            echo "ERROR: COCO_TC_GOOGLE_SERVICES_JSON_BASE64_${ENV_NAME^^} secret not set." >&2
+            exit 1
+          fi
+          echo "$VALUE" | base64 -d > google-services.json
+          echo "GOOGLE_SERVICES_JSON=$(pwd)/google-services.json" >> "$GITHUB_ENV"
+
       # ── 7. Build AAB via EAS local build ────────────────────────────────────
       # Signing is handled by EAS itself (eas.json → credentialsSource: remote
       # + --freeze-credentials pulls the registered upload keystore from EAS'
