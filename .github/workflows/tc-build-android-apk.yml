@@ -113,28 +113,15 @@ jobs:
             "${KS_PASSWORD}" "${KS_ALIAS}" "${KS_KEY_PASSWORD}" > credentials.json
 
       # ── Write Firebase Android config ───────────────────────────────────────
-      # Prefer environment-scoped GOOGLE_SERVICES_JSON (new setup). Keep
-      # legacy COCO_TC_*_BASE64_* fallback so older environments still work.
+      # Uses only environment-scoped GOOGLE_SERVICES_JSON.
       - name: Write Firebase Android config
         working-directory: app
         env:
-          ENV_NAME: ${{ github.event.inputs.environment || 'development' }}
-          GOOGLE_SERVICES_JSON_PRIMARY: ${{ secrets.GOOGLE_SERVICES_JSON }}
-          SECRET_DEVELOPMENT: ${{ secrets.COCO_TC_GOOGLE_SERVICES_JSON_BASE64_DEVELOPMENT }}
-          SECRET_PREVIEW: ${{ secrets.COCO_TC_GOOGLE_SERVICES_JSON_BASE64_PREVIEW }}
-          SECRET_PRODUCTION: ${{ secrets.COCO_TC_GOOGLE_SERVICES_JSON_BASE64_PRODUCTION }}
+          GOOGLE_SERVICES_JSON_VALUE: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
-          VALUE="$GOOGLE_SERVICES_JSON_PRIMARY"
+          VALUE="$GOOGLE_SERVICES_JSON_VALUE"
           if [ -z "$VALUE" ]; then
-            case "$ENV_NAME" in
-              development) VALUE="$SECRET_DEVELOPMENT" ;;
-              preview) VALUE="$SECRET_PREVIEW" ;;
-              production) VALUE="$SECRET_PRODUCTION" ;;
-              *) echo "ERROR: unknown environment '$ENV_NAME'" >&2; exit 1 ;;
-            esac
-          fi
-          if [ -z "$VALUE" ]; then
-            echo "ERROR: GOOGLE_SERVICES_JSON (or legacy COCO_TC_*_BASE64 secret) not set for '$ENV_NAME'." >&2
+            echo "ERROR: GOOGLE_SERVICES_JSON secret is not set for this environment." >&2
             exit 1
           fi
           if [ -f "$VALUE" ]; then
