@@ -34,6 +34,7 @@ jobs:
   build-ios:
     name: TC Build IPA (${{ github.event.inputs.environment || 'production' }})
     runs-on: ${{ github.event.inputs.runner == 'self-hosted' && fromJSON('["self-hosted","macOS"]') || fromJSON('["macos-latest"]') }}
+    environment: ${{ github.event.inputs.environment || 'development' }}
     timeout-minutes: 90
 
     steps:

@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Branch to build (e.g. develop, main, feat/xyz)'
+        description: "Branch to build (e.g. develop, main, feat/xyz)"
         required: true
-        default: 'develop'
+        default: "develop"
       environment:
-        description: 'Build environment'
+        description: "Build environment"
         required: true
-        default: 'development'
+        default: "development"
         type: choice
         options:
           - development
@@ -21,6 +21,7 @@ jobs:
   build-android:
     name: TC Build APK (${{ github.event.inputs.environment || 'development' }})
     runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'development' }}
     timeout-minutes: 45
 
     steps:
@@ -37,14 +38,14 @@ jobs:
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          distribution: "temurin"
+          java-version: "17"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20.19.4'
-          cache: 'yarn'
+          node-version: "20.19.4"
+          cache: "yarn"
           cache-dependency-path: app/yarn.lock
 
       # ── 3. Cache Gradle ────────────────────────────────────────────────────
