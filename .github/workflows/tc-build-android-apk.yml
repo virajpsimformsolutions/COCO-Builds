@@ -64,6 +64,20 @@ jobs:
         working-directory: app
         run: yarn install --frozen-lockfile
 
+      # ── 5. Pull EAS environment variables to .env.local ───────────────────
+      - name: Pull EAS environment
+        working-directory: app
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          BUILD_ENV: ${{ github.event.inputs.environment || 'development' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPO_TOKEN:-}" ]; then
+            echo "ERROR: EXPO_TOKEN secret is required to run eas env:pull." >&2
+            exit 1
+          fi
+          npx eas env:pull "$BUILD_ENV" --non-interactive 2>&1
+
       # ── 5. Write .env file from secrets ────────────────────────────────────
       - name: Write .env file
         working-directory: app
@@ -113,24 +127,17 @@ jobs:
             "${KS_PASSWORD}" "${KS_ALIAS}" "${KS_KEY_PASSWORD}" > credentials.json
 
       # ── Write Firebase Android config ───────────────────────────────────────
-      # Uses only environment-scoped GOOGLE_SERVICES_JSON.
+      # Uses the file path exported by EAS env:pull into .env.local.
       - name: Write Firebase Android config
         working-directory: app
-        env:
-          GOOGLE_SERVICES_JSON_VALUE: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
-          VALUE="$GOOGLE_SERVICES_JSON_VALUE"
-          if [ -z "$VALUE" ]; then
-            echo "ERROR: GOOGLE_SERVICES_JSON secret is not set for this environment." >&2
+          set -euo pipefail
+          VALUE="$(awk -F= '/^GOOGLE_SERVICES_JSON=/{print $2}' .env.local)"
+          if [ -z "$VALUE" ] || [ ! -f "$VALUE" ]; then
+            echo "ERROR: GOOGLE_SERVICES_JSON path is missing or invalid in .env.local after eas env:pull." >&2
             exit 1
           fi
-          if [ -f "$VALUE" ]; then
-            cp "$VALUE" google-services.json
-          elif echo "$VALUE" | base64 -d > google-services.json 2>/dev/null; then
-            :
-          else
-            printf '%s' "$VALUE" > google-services.json
-          fi
+          cp "$VALUE" google-services.json
           echo "GOOGLE_SERVICES_JSON=$(pwd)/google-services.json" >> "$GITHUB_ENV"
 
       # ── 8. Generate native Android project ──────────────────────────────────

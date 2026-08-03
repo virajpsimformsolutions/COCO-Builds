@@ -104,6 +104,20 @@ jobs:
       - name: Install EAS CLI
         run: npm install -g eas-cli@16.18.1 --silent
 
+      # ── Pull EAS environment variables to .env.local ──────────────────────
+      - name: Pull EAS environment
+        working-directory: app
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          BUILD_ENV: ${{ github.event.inputs.environment || 'development' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPO_TOKEN:-}" ]; then
+            echo "ERROR: EXPO_TOKEN secret is required to run eas env:pull." >&2
+            exit 1
+          fi
+          npx eas env:pull "$BUILD_ENV" --non-interactive 2>&1
+
       # ── 6. Map workflow environment to EAS profile ────────────────────────
       - name: Resolve EAS profile
         id: eas_profile
@@ -125,24 +139,17 @@ jobs:
           echo "Using EAS profile: $PROFILE"
 
       # ── Write Firebase iOS config ───────────────────────────────────────────
-      # Uses only environment-scoped GOOGLE_SERVICE_INFO_PLIST.
+      # Uses the file path exported by EAS env:pull into .env.local.
       - name: Write Firebase iOS config
         working-directory: app
-        env:
-          GOOGLE_SERVICE_INFO_PLIST_VALUE: ${{ secrets.GOOGLE_SERVICE_INFO_PLIST }}
         run: |
-          VALUE="$GOOGLE_SERVICE_INFO_PLIST_VALUE"
-          if [ -z "$VALUE" ]; then
-            echo "ERROR: GOOGLE_SERVICE_INFO_PLIST secret is not set for this environment." >&2
+          set -euo pipefail
+          VALUE="$(awk -F= '/^GOOGLE_SERVICE_INFO_PLIST=/{print $2}' .env.local)"
+          if [ -z "$VALUE" ] || [ ! -f "$VALUE" ]; then
+            echo "ERROR: GOOGLE_SERVICE_INFO_PLIST path is missing or invalid in .env.local after eas env:pull." >&2
             exit 1
           fi
-          if [ -f "$VALUE" ]; then
-            cp "$VALUE" GoogleService-Info.plist
-          elif echo "$VALUE" | base64 -d > GoogleService-Info.plist 2>/dev/null; then
-            :
-          else
-            printf '%s' "$VALUE" > GoogleService-Info.plist
-          fi
+          cp "$VALUE" GoogleService-Info.plist
           echo "GOOGLE_SERVICE_INFO_PLIST=$(pwd)/GoogleService-Info.plist" >> "$GITHUB_ENV"
 
       # ── 7. Generate iOS project for local build ────────────────────────────
